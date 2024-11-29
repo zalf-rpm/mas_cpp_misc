@@ -42,3 +42,5 @@
 /tools/debug/_cmake_debug
 /tools/read-ini/_cmake_debug
 /zeromq/_cmake_debug
+/common/_cmake_debug
+/common/_cmake_release
