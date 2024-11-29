@@ -1,6 +1,3 @@
 [submodule "mas_capnproto_schemas"]
 	path = mas_capnproto_schemas
 	url = https://github.com/zalf-rpm/mas_capnproto_schemas.git
-[submodule "mas_cpp_common"]
-	path = mas_cpp_common
-	url = https://github.com/zalf-rpm/mas_cpp_common.git

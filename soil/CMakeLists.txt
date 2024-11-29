@@ -15,7 +15,7 @@ endif()
 
 if(NOT TARGET capnp_schemas_lib)
     message(STATUS "target: capnp_schemas_lib")
-    add_subdirectory(../../../capnproto_schemas capnproto_schemas)
+    add_subdirectory(../mas_capnproto_schemas/gen/c++ capnproto_schemas)
 endif()
 
 add_library(soil_lib 
