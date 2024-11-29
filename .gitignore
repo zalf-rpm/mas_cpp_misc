@@ -30,3 +30,15 @@
 *.exe
 *.out
 *.app
+/climate/climate-common/_cmake_debug
+/climate/climate-file-io/_cmake_debug
+/db/_cmake_debug
+/db/db/_cmake_debug
+/db/sqlite3/_cmake_debug
+/json11/_cmake_debug
+/soil/_cmake_debug
+/soil/cmake-build-debug
+/tools/date/_cmake_debug
+/tools/debug/_cmake_debug
+/tools/read-ini/_cmake_debug
+/zeromq/_cmake_debug
