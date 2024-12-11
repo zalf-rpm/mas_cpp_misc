@@ -98,8 +98,6 @@ bool Tools::isAbsolutePath(const std::string& path) {
   return false;
 }
 
-//-----------------------------------------------------------------------------
-
 string Tools::fixSystemSeparator(string path) { 
 #ifdef _WIN32
   auto pos = path.find("/");
@@ -121,8 +119,6 @@ string Tools::fixSystemSeparator(string path) {
 #endif
   return path;
 }
-
-//-----------------------------------------------------------------------------
 
 bool Tools::ensureDirExists(const string& path) {
   string fullpath = fixSystemSeparator(path);
@@ -170,7 +166,6 @@ bool Tools::ensureDirExists(const string& path) {
   return true;
 }
 
-//------------------------------------------------------------------------------
 /**
 Removes all characters in charSet from the right side of the string.
 */
@@ -208,8 +203,6 @@ Tools::rimRight(const std::string& str, const std::string& charSet) {
   return strResult;
 }
 
-//-----------------------------------------------------------------------------
-
 bool Tools::directoryExist(const std::string& path) {
   string fullpath = fixSystemSeparator(path);
 #ifdef _WIN32
@@ -227,8 +220,6 @@ bool Tools::directoryExist(const std::string& path) {
 #endif
 }
 
-//-----------------------------------------------------------------------------
-
 string Tools::replace(std::string s, std::string findStr, std::string replStr) {
   auto count = findStr.size();
   size_t pos = s.find(findStr);
@@ -238,8 +229,6 @@ string Tools::replace(std::string s, std::string findStr, std::string replStr) {
   }
   return s;
 }
-
-//-----------------------------------------------------------------------------
 
 std::string Tools::winStringSystemCodepageToutf8(const std::string& codepage_str) {
 #ifdef _WIN32
@@ -261,8 +250,6 @@ std::string Tools::winStringSystemCodepageToutf8(const std::string& codepage_str
 #endif
   
 }
-
-//-----------------------------------------------------------------------------
 
 std::string Tools::replaceEnvVars(std::string path) {
   string startToken = "${";

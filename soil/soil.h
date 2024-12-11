@@ -31,19 +31,17 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include "json11/json11.hpp"
 #include "json11/json11-helper.h"
 
-namespace Soil
-{
+namespace Soil {
 
-//std::function<double(double)> transformIfPercent(const json11::Json &j, const std::string &key);
-
-//std::function<double(double)> transformIfNotMeters(const json11::Json &j, const std::string& key);
+class SoilParameters;
+Tools::Errors noSetPwpFcSat(SoilParameters* sp);
 
 //! @author Claas Nendel, Michael Berg 
 struct SoilParameters : public Tools::Json11Serializable
 {
-  SoilParameters() = default;
+  explicit SoilParameters(std::function<Tools::Errors(SoilParameters*)> setPwpFcSat = noSetPwpFcSat);
 
-  explicit SoilParameters(json11::Json object);
+  //explicit SoilParameters(json11::Json object);
 
   void serialize(mas::schema::model::monica::SoilParameters::Builder builder) const;
   void deserialize(mas::schema::model::monica::SoilParameters::Reader reader);
@@ -53,7 +51,7 @@ struct SoilParameters : public Tools::Json11Serializable
   json11::Json to_json() const override;
 
   //! Soil layer's silt content [kg kg-1] (Schluff)
-  double vs_SoilSiltContent() const { return (1.0 - vs_SoilSandContent - vs_SoilClayContent); }
+  double vs_SoilSiltContent() const { return 1.0 - vs_SoilSandContent - vs_SoilClayContent; }
 
   double vs_SoilRawDensity() const;
   void set_vs_SoilRawDensity(double srd) { _vs_SoilRawDensity = srd; }
@@ -73,6 +71,8 @@ struct SoilParameters : public Tools::Json11Serializable
   static double sandAndClay2lambda(double sand, double clay);
 
   bool isValid() const;
+
+  std::function<Tools::Errors(SoilParameters*)> calculateAndSetPwpFcSat;
 
   // members
   double vs_SoilSandContent{-1.0}; //!< Soil layer's sand content [kg kg-1] //{0.4}
@@ -97,11 +97,8 @@ private:
   double _vs_SoilOrganicMatter{-1.0}; //!< [kg kg-1]
 };
 
-/**
- * Data structure that holds information about capillary rise rates.
- */
-class CapillaryRiseRates
-{
+// Data structure that holds information about capillary rise rates.
+class CapillaryRiseRates {
 public:
   //Adds a capillary rise rate to data structure.
   void addRate(const std::string& soilType, size_t distance, double value);
@@ -121,53 +118,13 @@ const CapillaryRiseRates& readCapillaryRiseRates();
 typedef std::vector<SoilParameters> SoilPMs;
 typedef std::shared_ptr<SoilPMs> SoilPMsPtr;
 
-std::pair<SoilPMs, Tools::Errors> createEqualSizedSoilPMs(const Tools::J11Array& jsonSoilPMs, double layerThickness = 0.1,
-                                                          int numberOfLayers = 20);
+Tools::EResult<SoilPMs> createEqualSizedSoilPMs(const std::function<Tools::Errors(SoilParameters*)>& setPwpFcSat,
+  const Tools::J11Array& jsonSoilPMs, double layerThickness = 0.1, int numberOfLayers = 20);
 
-std::pair<SoilPMs, Tools::Errors> createSoilPMs(const Tools::J11Array &jsonSoilPMs);
+Tools::EResult<SoilPMs> createSoilPMs(const std::function<Tools::Errors(SoilParameters*)>& setPwpFcSat, const Tools::J11Array &jsonSoilPMs);
 
-//! creates a concatenated string of the KA5 soil-textures making up the soil-profile with the given id
-//std::string soilProfileId2KA5Layers(const std::string& abstractDbSchema,
-//																		int soilProfileId);
+std::function<Tools::Errors(SoilParameters*)> getInitializedUpdateUnsetPwpFcSatfromKA5textureClassFunction(const std::string& pathToSoilDir);
 
-SoilPMsPtr soilParametersFromHermesFile(int soilId,
-                                              const std::string& pathToFile,
-                                              int layerThicknessCm,
-                                              int maxDepthCm,
-                                              double soil_ph = -1.0,
-                                              double drainage_coeff = -1.0);
-
-struct RPSCDRes
-{
-  RPSCDRes() = default;
-  explicit RPSCDRes(bool initialized) : initialized(initialized) {}
-  double sat{ 0.0 }; // [m3 m-3]
-  double fc{ 0.0 };  // [m3 m-3]
-  double pwp{ 0.0 }; // [m3 m-3]
-  bool initialized{ false };
-};
-RPSCDRes readPrincipalSoilCharacteristicData(const std::string& KA5TextureClass, double rawDensity);
-RPSCDRes readSoilCharacteristicModifier(const std::string& KA5TextureClass, double organicMatter);
-
-void soilCharacteristicsKA5(SoilParameters&);
-
-struct FcSatPwp
-{
-  double fc{0.0};
-  double sat{0.0};
-  double pwp{0.0};
-};
-FcSatPwp fcSatPwpFromKA5textureClass(std::string KA5textureClass,
-                                     double soilStoneContent,
-                                     double soilRawDensity,
-                                     double soilOrganicMatter);
-
-FcSatPwp fcSatPwpFromVanGenuchten(double sandContent,
-                                  double clayContent,
-                                  double stoneContent,
-                                  double soilBulkDensity,
-                                  double soilOrganicCarbon);
-
-
+Tools::Errors updateUnsetPwpFcSatFromVanGenuchten(SoilParameters* sp);
 
 } // namespace Soil

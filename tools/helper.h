@@ -69,7 +69,6 @@ T printPossibleErrors(const EResult<T>& er, bool includeWarnings = false) {
   return T();
 };
 
-//---------------------------------------------------------------------------
 
 //code adapted from: http://stackoverflow.com/questions/7690864/haskell-style-maybe-type-chaining-in-c11
 template<typename T>

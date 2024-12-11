@@ -41,6 +41,7 @@ template<typename T>
 T identity(T t) { return t; }
 
 struct DLL_API Json11Serializable {
+public:
   virtual Errors merge(json11::Json j);
 
   virtual json11::Json to_json() const = 0;
@@ -62,37 +63,36 @@ J11Array toPrimJsonArray(const Collection &col) {
 template<class Collection>
 J11Array toJsonArray(const Collection &col) {
   std::vector<json11::Json> js;
-  for (typename Collection::value_type t: col)
-    js.push_back(t.to_json());
+  for (typename Collection::value_type t: col) js.push_back(t.to_json());
   return js;
 }
 
 template<typename T>
 std::vector<T> toVector(const json11::Json &arr) {
   std::vector<T> ts;
-  for (json11::Json j: arr.array_items())
-    ts.push_back(j);
+  for (json11::Json j: arr.array_items()) {
+    T t;
+    t.merge(j);
+    ts.emplace_back(t);
+  }
   return ts;
 }
 
 inline std::vector<double> toDoubleVector(const json11::Json &arr) {
   std::vector<double> ds;
-  for (json11::Json j: arr.array_items())
-    ds.push_back(j.number_value());
+  for (json11::Json j: arr.array_items()) ds.push_back(j.number_value());
   return ds;
 }
 
 inline std::vector<int> toIntVector(const json11::Json &arr) {
   std::vector<int> is;
-  for (json11::Json j: arr.array_items())
-    is.push_back(j.int_value());
+  for (json11::Json j: arr.array_items()) is.push_back(j.int_value());
   return is;
 }
 
 inline std::vector<std::string> toStringVector(const json11::Json &arr) {
   std::vector<std::string> ss;
-  for (json11::Json j: arr.array_items())
-    ss.push_back(j.string_value());
+  for (json11::Json j: arr.array_items()) ss.push_back(j.string_value());
   return ss;
 }
 
@@ -355,24 +355,21 @@ void set_value_obj_value(C &var,
                          const json11::Json &j,
                          const std::string &key) {
   std::string err;
-  if (j.has_shape({{key, json11::Json::OBJECT}}, err))
-    var = C(j[key]);
-  if (!err.empty())
-    std::cerr << "Error @ Tools::set_value_obj_value: " << err << std::endl;
+  if (j.has_shape({{key, json11::Json::OBJECT}}, err)) var.merge(j[key]);
+  if (!err.empty()) std::cerr << "Error @ Tools::set_value_obj_value: " << err << std::endl;
 }
 
 inline json11::Json::array
-cljson11Collection(std::string type,
-                   std::initializer_list<json11::Json> l
+cljson11Collection(const std::string& type,
+                   const std::initializer_list<json11::Json> l
                    = std::initializer_list<json11::Json>()) {
   json11::Json::array a{type};
-  for (auto j: l) a.push_back(j);
+  for (const auto& j: l) a.push_back(j);
   return a; //a.insert(a.end(), l.begin(), l.end());
 }
 
 inline json11::Json::array
-cljson11Vector(std::initializer_list<json11::Json> l
-= std::initializer_list<json11::Json>()) {
+cljson11Vector(std::initializer_list<json11::Json> l = std::initializer_list<json11::Json>()) {
   return cljson11Collection("v", l);
 }
 
