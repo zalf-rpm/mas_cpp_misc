@@ -626,7 +626,7 @@ EResult<RPSCDRes> readSoilCharacteristicModifier(const std::string& pathToSoilDi
     auto ci2 = ci->second.find(int(organicMatter * 10));
     return ci2 != ci->second.end()
     ? ci2->second
-    : EResult(RPSCDRes(), kj::str("Couldn't find soil characteristic data for soil type ", soilType, " and organic matter ", organicMatter).cStr());
+    : EResult<RPSCDRes>(RPSCDRes(), kj::str("Couldn't find soil characteristic data for soil type ", soilType, " and organic matter ", organicMatter).cStr());
   }
 
   return {{}, errors};
