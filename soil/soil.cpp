@@ -553,7 +553,7 @@ EResult<RPSCDRes> readPrincipalSoilCharacteristicData(const std::string& pathToS
 
     return ci2 != ci->second.end()
     ? ci2->second
-    : EResult(RPSCDRes(), kj::str("Couldn't find soil characteristic data for soil type ", soilType, " and raw density ", rawDensity).cStr());
+    : EResult<RPSCDRes>(RPSCDRes(), kj::str("Couldn't find soil characteristic data for soil type ", soilType, " and raw density ", rawDensity).cStr());
   }
 
   return {{}, errors};
