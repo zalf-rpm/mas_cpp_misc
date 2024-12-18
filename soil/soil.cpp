@@ -146,14 +146,20 @@ Errors SoilParameters::merge(json11::Json j) {
   if (vs_SoilStoneContent > 0) vs_SoilStoneContent = min(vs_SoilStoneContent, 0.8);
 
   if (calculateAndSetPwpFcSat) es.append(calculateAndSetPwpFcSat(this));
-  //if (vs_SoilTexture.empty()) setPwpFcSatFromVanGenuchten(this);
-  //else setPwpFcSatFromKA5textureClass(this);
-  //bool fcSatPwpSet = vs_FieldCapacity > 0 && vs_Saturation > 0 && vs_PermanentWiltingPoint > 0;
 
   // restrict FC, PWP and SAT else the water transport algorithm gets instable
-  vs_FieldCapacity = max(0.05, vs_FieldCapacity);
-  vs_PermanentWiltingPoint = max(0.01, vs_PermanentWiltingPoint);
-  vs_Saturation = max(0.1, vs_Saturation);
+  if (vs_FieldCapacity < 0.05) {
+    es.appendWarning(kj::str("Field capacity is too low (", vs_FieldCapacity * 100, "%). Is being set to 5%.").cStr());
+    vs_FieldCapacity = 0.05;
+  }
+  if (vs_PermanentWiltingPoint < 0.01) {
+    es.appendWarning(kj::str("Permanent wilting point is too low (", vs_PermanentWiltingPoint * 100, "%). Is being set to 1%.").cStr());
+    vs_PermanentWiltingPoint = 0.01;
+  }
+  if (vs_Saturation < 0.1) {
+    es.appendWarning(kj::str("Saturation is too low (", vs_Saturation * 100, "%). Is being set to 10%.").cStr());
+    vs_Saturation = 0.1;
+  }
 
   if (vs_Lambda < 0 && vs_SoilSandContent > 0 && vs_SoilClayContent > 0) {
     vs_Lambda = sandAndClay2lambda(vs_SoilSandContent, vs_SoilClayContent);
@@ -885,6 +891,35 @@ FcSatPwp fcSatPwpFromVanGenuchten(double sandContent,
   return res;
 }
 
+FcSatPwp fcSatPwpFromToth(double sandContent,
+                          double clayContent,
+                          double stoneContent,
+                          double soilBulkDensity,
+                          double soilOrganicCarbon) {
+  FcSatPwp res;
+  res.sat = (0.81 - 0.283 * (soilBulkDensity / 1000.0) + 0.1 * clayContent) * (1.0 - stoneContent);
+  // sat function from MONICA, maybe not necessary
+
+  double sluf = 100.0 - clayContent * 100.0 - sandContent * 100.0;
+  // transform from [0 to 1] to [0 to 100] , in the future, I will change and put the conversions inside the functions
+  double ton = clayContent * 100.0;
+  double oc = soilOrganicCarbon * 100.0; // The SOC was 0.001 from the input, that’s why I added this line
+
+  res.fc = 0.24490 - 0.1887 * (1 / (oc + 1)) + 0.0045270 * ton + 0.001535 * sluf +
+           0.001442 * sluf * (1 / (oc + 1)) - 0.0000511 * sluf * ton +
+           0.0008676 * ton * (1 / (oc + 1));
+
+  res.pwp = 0.09878 + 0.002127 * ton - 0.0008366 * sluf - 0.0767 * (1 / (oc + 1)) +
+            0.00003853 * sluf * ton + 0.00233 * ton * (1 / (oc + 1)) +
+            0.0009498 * sluf * (1 / (oc + 1));
+
+  //res.sat = std::round(res.sat * 1000.0) / 1000.0;  // Maybe not necessary
+  //res.fc  = std::round(res.fc  * 1000.0) / 1000.0;
+  //res.pwp = std::round(res.pwp * 1000.0) / 1000.0;
+
+  return res;
+}
+
 Errors updateUnsetPwpFcSatFromKA5textureClass(const std::string& pathToSoilDir, SoilParameters* sp) {
   if (sp->vs_SoilTexture.empty()) return {"No soil texture defined!"};
 
@@ -926,5 +961,18 @@ Errors Soil::updateUnsetPwpFcSatFromVanGenuchten(SoilParameters* sp) {
   return {};
 }
 
+Errors Soil::updateUnsetPwpFcSatFromToth(SoilParameters* sp) {
+  if (sp->vs_FieldCapacity < 0 || sp->vs_Saturation < 0 || sp->vs_PermanentWiltingPoint < 0) {
+    auto res = fcSatPwpFromToth(sp->vs_SoilSandContent,
+                                        sp->vs_SoilClayContent,
+                                        sp->vs_SoilStoneContent,
+                                        sp->vs_SoilBulkDensity(),
+                                        sp->vs_SoilOrganicCarbon());
+    if (sp->vs_FieldCapacity < 0) sp->vs_FieldCapacity = res.fc;
+    if (sp->vs_Saturation < 0) sp->vs_Saturation = res.sat;
+    if (sp->vs_PermanentWiltingPoint < 0) sp->vs_PermanentWiltingPoint = res.pwp;
+  }
+  return {};
+}
 
 

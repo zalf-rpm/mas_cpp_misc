@@ -127,4 +127,6 @@ std::function<Tools::Errors(SoilParameters*)> getInitializedUpdateUnsetPwpFcSatf
 
 Tools::Errors updateUnsetPwpFcSatFromVanGenuchten(SoilParameters* sp);
 
+Tools::Errors updateUnsetPwpFcSatFromToth(SoilParameters* sp);
+
 } // namespace Soil
