@@ -29,8 +29,6 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include <capnp/dynamic.h>
 #include <iostream>
 
-#define KJ_MVCAP(var) var = kj::mv(var)
-
 #include "sole.hpp"
 
 using namespace std;
@@ -56,7 +54,7 @@ struct Channel::Impl {
   Impl(Channel &self, mas::infrastructure::common::Restorer *restorer, kj::StringPtr name, kj::StringPtr description,
        uint64_t bufferSize)
       : self(self), id(kj::str(sole::uuid4().str())), name(kj::str(name)), description(kj::str(description)),
-        bufferSize(std::max((uint64_t) 1, bufferSize)) {
+        bufferSize(std::max(static_cast<uint64_t>(1), bufferSize)) {
     setRestorer(restorer);
   }
 
@@ -81,7 +79,7 @@ Channel::Channel(kj::StringPtr name, kj::StringPtr description, uint64_t bufferS
 Channel::~Channel() = default;
 
 kj::Promise<void> Channel::info(InfoContext context) {
-  KJ_LOG(INFO, "info message received");
+  KJ_LOG(INFO, "Channel::info: info message received");
   auto rs = context.getResults();
   rs.setId(impl->id);
   rs.setName(impl->name);
@@ -91,7 +89,7 @@ kj::Promise<void> Channel::info(InfoContext context) {
 
 
 kj::Promise<void> Channel::save(SaveContext context) {
-  KJ_LOG(INFO, "save message received");
+  KJ_LOG(INFO, "Channel::save: save message received");
   if (impl->restorer) {
     return impl->restorer->save(impl->client, context.getResults().initSturdyRef(),
                                 context.getResults().initUnsaveSR());
@@ -104,19 +102,19 @@ void Channel::closedReader(kj::StringPtr readerId) {
   impl->readers.erase(readerId);
   // now that all readers disconnected, turn of auto-closing readers
   if (kj::size(impl->readers) == 0) impl->sendCloseOnEmptyBuffer = false;
-  KJ_LOG(INFO, "number of readers left:", kj::size(impl->readers));
+  KJ_LOG(INFO, "Channel::closedReader: number of readers left:", kj::size(impl->readers));
   //cout << "Channel::closedReader: number of readers left:" << kj::size(impl->readers) << endl;
 }
 
 void Channel::closedWriter(kj::StringPtr writerId) {
   impl->writers.erase(writerId);
-  KJ_LOG(INFO, "number of writers left:", kj::size(impl->writers), impl->autoCloseSemantics);
+  KJ_LOG(INFO, "Channel::closedWriter: number of writers left:", kj::size(impl->writers), impl->autoCloseSemantics);
   //cout << "Channel::closedWriter: number of writers left:" << kj::size(impl->writers) << " FBP Close semantics: " << (impl->autoCloseSemantics == AnyPointerChannel::CloseSemantics::FBP ? "true" : "false")  << endl;
   //cout << "Channel::closedWriter:number of readers:" << kj::size(impl->readers) << " FBP Close semantics: " << (impl->autoCloseSemantics == AnyPointerChannel::CloseSemantics::FBP)  << endl;
 
   if (impl->autoCloseSemantics == AnyPointerChannel::CloseSemantics::FBP && kj::size(impl->writers) == 0) {
     impl->sendCloseOnEmptyBuffer = true;
-    KJ_LOG(INFO, "FBP semantics and no writers left -> sending done to readers");
+    KJ_LOG(INFO, "Channel::closedWriter: FBP semantics and no writers left -> sending done to readers");
     //cout << "Channel::closedWriter: FBP semantics and no writers left -> sending done to readers" << endl;
 
     // as we just received a done message which should be distributed and would
@@ -125,7 +123,7 @@ void Channel::closedWriter(kj::StringPtr writerId) {
       auto &brf = impl->blockingReadFulfillers.back();
       brf->fulfill(nullptr);//kj::Maybe<AnyPointerMsg::Reader>());
       impl->blockingReadFulfillers.pop_back();
-      KJ_LOG(INFO, "sent done to reader on last finished writer");
+      KJ_LOG(INFO, "Channel::closedWriter: sent done to reader on last finished writer");
       //cout << "Channel::closedWriter: sent done to reader on last finished writer" << endl;
     }
     KJ_LOG(INFO, kj::size(impl->blockingReadFulfillers));
@@ -232,7 +230,7 @@ kj::Promise<void> Reader::read(ReadContext context) {
 }
 
 kj::Promise<void> Reader::close(CloseContext context) {
-  //cout << "Reader::close: received close message id: " << id().cStr() << endl;
+  KJ_LOG(INFO, "Reader::close: received close message id: ", id());
   _channel.closedReader(id());
   return kj::READY_NOW;
 }
@@ -280,7 +278,7 @@ kj::Promise<void> Writer::write(WriteContext context) {
 }
 
 kj::Promise<void> Writer::close(CloseContext context) {
-  //cout << "Writer::close: received close message id: " << id().cStr() << endl;
+  KJ_LOG(INFO, "Writer::close: received close message id: ", id());
   _channel.closedWriter(id());
   return kj::READY_NOW;
 }
