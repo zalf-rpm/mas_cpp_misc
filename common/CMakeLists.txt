@@ -105,6 +105,8 @@ add_library(common_lib
 	STATIC
 	channel.h
 	channel.cpp
+	ports.h
+	ports.cpp
 	common.h
 	common.cpp
 	restorer.h
