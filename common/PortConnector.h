@@ -31,24 +31,24 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include <capnp/any.h>
 #include <capnp/rpc-twoparty.h>
 
-#include "common.h"
-#include "restorer.h"
 #include "common.capnp.h"
 #include "fbp.capnp.h"
 #include "rpc-connection-manager.h"
-#include "channel.h"
 
 namespace mas::infrastructure::common {
 
-class Ports final : public mas::schema::fbp::PortCallbackRegistrar::PortCallback::Server {
+class PortConnector { //final : public mas::schema::fbp::PortCallbackRegistrar::PortCallback::Server {
 public:
-  Ports(ConnectionManager &conMan,
+  PortConnector(ConnectionManager &conMan,
     std::initializer_list<std::tuple<int, kj::StringPtr, kj::StringPtr>> inPorts,
     std::initializer_list<std::tuple<int, kj::StringPtr, kj::StringPtr>> outPorts, bool interactive = false);
 
-  ~Ports() = default;
+  ~PortConnector() = default;
 
   void connect();
+
+  kj::Vector<int> connectInteractively(kj::StringPtr newPortInfoReaderSr,
+    std::initializer_list<std::initializer_list<int>> andOrPortIds);
 
   typedef mas::schema::fbp::IP IP;
   typedef mas::schema::fbp::Channel<IP> Channel;
@@ -59,16 +59,16 @@ public:
   Channel::ChanWriter::Client out(int outPortId);
   bool outIsConnected(int outPortId) const;
 
-  kj::Promise<void> newInPort(NewInPortContext context) override;
+  //kj::Promise<void> newInPort(NewInPortContext context) override;
 
-  kj::Promise<void> newOutPort(NewOutPortContext context) override;
+  //kj::Promise<void> newOutPort(NewOutPortContext context) override;
 
   struct Impl;
 private:
   kj::Own<Impl> impl;
 };
 
-KJ_DECLARE_NON_POLYMORPHIC(Ports::Impl)
+KJ_DECLARE_NON_POLYMORPHIC(PortConnector::Impl)
 
 } // namespace mas::infrastructure::common
 
