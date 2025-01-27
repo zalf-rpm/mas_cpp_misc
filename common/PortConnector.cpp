@@ -34,51 +34,6 @@ using namespace std;
 using namespace mas::infrastructure::common;
 
 struct PortConnector::Impl {
-//   class PortCallback final : public mas::schema::fbp::PortCallbackRegistrar::PortCallback::Server {
-//   public:
-//     explicit PortCallback(Impl& impl) : _impl(impl) {}
-//
-//     ~PortCallback() = default;
-//
-//     kj::Promise<void> newInPort(NewInPortContext context) override {
-//       auto params = context.getParams();
-//       if (params.hasName()) {
-//         KJ_IF_MAYBE(portId, _impl.inPortName2Id.find(params.getName())) {
-//           if (params.hasReaderCap()) {
-//             _impl.inPortCaps.upsert(*portId, params.getReaderCap());
-//             _impl.inPortsConnected.upsert(*portId, true);
-//             _impl.checkNecessaryPortsConnected(*portId);
-//           }
-//           else {
-//             _impl.inPortsConnected.upsert(*portId, false);
-//           }
-//           if (params.hasReaderSR()) _impl.inPortSRs.upsert(*portId, kj::str(params.getReaderSR()));
-//         }
-//       }
-//       return kj::READY_NOW;
-//     }
-//
-//     kj::Promise<void> newOutPort(NewOutPortContext context) override {
-//       auto params = context.getParams();
-//       if (params.hasName()) {
-//         KJ_IF_MAYBE(portId, _impl.outPortName2Id.find(params.getName())) {
-//           if (params.hasWriterCap()) {
-//             _impl.outPortCaps.upsert(*portId, params.getWriterCap());
-//             _impl.outPortsConnected.upsert(*portId, true);
-//             _impl.checkNecessaryPortsConnected(*portId);
-//           } else {
-//             _impl.outPortsConnected.upsert(*portId, false);
-//           }
-//           if (params.hasWriterSR()) _impl.outPortSRs.upsert(*portId, kj::str(params.getWriterSR()));
-//         }
-//       }
-//       return kj::READY_NOW;
-//     }
-//
-//   private:
-//     Impl& _impl;
-//   };
-
   PortConnector &self;
   kj::HashMap<int, Channel::ChanReader::Client> inPortCaps;
   kj::HashMap<kj::String, int> inPortName2Id;
@@ -118,19 +73,25 @@ struct PortConnector::Impl {
 
   void connect() {
     for (auto &e : inPortSRs) {
-      kj::StringPtr sr = e.value;
-      if (sr != nullptr && sr.size() > 0) {
-        auto reader = conMan.tryConnectB(sr).castAs<Channel::ChanReader>();
-        inPortCaps.upsert(e.key, kj::mv(reader));
-        inPortsConnected.upsert(e.key, true);
-      }
+      connectToSR(e.key, e.value, true);
     }
     for (auto &e : outPortSRs) {
-      kj::StringPtr sr = get<0>(e.value);
+      connectToSR(e.key, e.value, false);
+    }
+  }
+
+  void connectToSR(int portId, kj::StringPtr sr, bool isInPort) {
+    if (isInPort) {
+      if (sr != nullptr && sr.size() > 0) {
+        auto reader = conMan.tryConnectB(sr).castAs<Channel::ChanReader>();
+        inPortCaps.upsert(portId, kj::mv(reader));
+        inPortsConnected.upsert(portId, true);
+      }
+    } else {
       if (sr != nullptr && sr.size() > 0) {
         auto writer = conMan.tryConnectB(sr).castAs<Channel::ChanWriter>();
-        outPortCaps.upsert(e.key, kj::mv(writer));
-        outPortsConnected.upsert(e.key, true);
+        outPortCaps.upsert(portId, kj::mv(writer));
+        outPortsConnected.upsert(portId, true);
       }
     }
   }
@@ -153,32 +114,37 @@ struct PortConnector::Impl {
       } else if (msg.hasValue()) {
         int newPortId = -1;
         auto newPortInfo = msg.getValue();
-        if (newPortInfo.isIn()) {
-          auto in = newPortInfo.getIn();
-          if (newPortInfo.hasName()) {
-            KJ_IF_MAYBE(portId, inPortName2Id.find(newPortInfo.getName())) {
-              if (in.hasReaderCap()) {
-                inPortCaps.upsert(*portId, in.getReaderCap());
+        if (newPortInfo.hasName()) {
+          auto name = newPortInfo.getName();
+          if (newPortInfo.hasInPortReaderCap() || newPortInfo.hasInPortReaderSR()){
+            KJ_IF_MAYBE(portId, inPortName2Id.find(name)) {
+              if (newPortInfo.hasInPortReaderCap()) {
+                inPortCaps.upsert(*portId, newPortInfo.getInPortReaderCap());
                 inPortsConnected.upsert(*portId, true);
+                newPortId = *portId;
+              } else if (newPortInfo.hasInPortReaderSR()) {
+                auto sr = newPortInfo.getInPortReaderSR();
+                inPortSRs.upsert(*portId, kj::str(sr));
+                connectToSR(*portId, sr, true);
                 newPortId = *portId;
               } else {
                 inPortsConnected.upsert(*portId, false);
               }
-              if (in.hasReaderSR()) inPortSRs.upsert(*portId, kj::str(in.getReaderSR()));
             }
-          }
-        } else if (newPortInfo.isOut()) {
-          auto out = newPortInfo.getOut();
-          if (newPortInfo.hasName()) {
-            KJ_IF_MAYBE(portId, outPortName2Id.find(newPortInfo.getName())) {
-              if (out.hasWriterCap()) {
-                outPortCaps.upsert(*portId, out.getWriterCap());
+          } else if (newPortInfo.hasOutPortWriterCap() || newPortInfo.hasOutPortWriterSR()){
+            KJ_IF_MAYBE(portId, outPortName2Id.find(name)) {
+              if (newPortInfo.hasOutPortWriterCap()) {
+                outPortCaps.upsert(*portId, newPortInfo.getOutPortWriterCap());
                 outPortsConnected.upsert(*portId, true);
+                newPortId = *portId;
+              } else if (newPortInfo.hasOutPortWriterSR()) {
+                auto sr = newPortInfo.getOutPortWriterSR();
+                outPortSRs.upsert(*portId, kj::str(sr));
+                connectToSR(*portId, sr, false);
                 newPortId = *portId;
               } else {
                 outPortsConnected.upsert(*portId, false);
               }
-              if (out.hasWriterSR()) outPortSRs.upsert(*portId, kj::str(out.getWriterSR()));
             }
           }
         }
