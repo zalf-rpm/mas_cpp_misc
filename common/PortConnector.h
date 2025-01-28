@@ -59,10 +59,6 @@ public:
   Channel::ChanWriter::Client out(int outPortId);
   bool outIsConnected(int outPortId) const;
 
-  //kj::Promise<void> newInPort(NewInPortContext context) override;
-
-  //kj::Promise<void> newOutPort(NewOutPortContext context) override;
-
   struct Impl;
 private:
   kj::Own<Impl> impl;
