@@ -29,7 +29,8 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include <capnp/dynamic.h>
 #include <iostream>
 #include <kj/encoding.h>
-#include <toml++/toml.hpp>
+
+#include "toml/toml.hpp"
 
 using namespace std;
 using namespace mas::infrastructure::common;

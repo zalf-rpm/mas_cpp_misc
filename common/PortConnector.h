@@ -31,8 +31,7 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include <capnp/any.h>
 #include <capnp/rpc-twoparty.h>
 
-#include <toml++/toml.hpp>
-
+#include "toml/toml.hpp"
 #include "common.capnp.h"
 #include "fbp.capnp.h"
 #include "rpc-connection-manager.h"
