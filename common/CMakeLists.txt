@@ -99,7 +99,6 @@ GroupSources("src" ${PROJECT_SOURCE_DIR})
 #------------------------------------------------------------------------------
 
 find_package(unofficial-sodium CONFIG REQUIRED)
-find_package(PkgConfig REQUIRED)
 
 # create common_lib
 add_library(common_lib
