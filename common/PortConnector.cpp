@@ -29,6 +29,7 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include <capnp/dynamic.h>
 #include <iostream>
 #include <kj/encoding.h>
+#include <toml++/toml.hpp>
 
 using namespace std;
 using namespace mas::infrastructure::common;
@@ -48,6 +49,7 @@ struct PortConnector::Impl {
   //mas::schema::fbp::PortCallbackRegistrar::PortCallback::Client portCallback{nullptr};
   //kj::HashMap<int, std::vector<int>> andOrPortIds;
   kj::Own<kj::PromiseFulfiller<void>> necessaryPortsConnected;
+  toml::table tomlConfig;
 
   Impl(PortConnector &self, ConnectionManager& conMan,
     std::initializer_list<std::tuple<int, kj::StringPtr, kj::StringPtr>> inPorts,
@@ -69,6 +71,24 @@ struct PortConnector::Impl {
     }
   }
 
+  Impl(PortConnector &self, ConnectionManager& conMan,
+    std::map<int, kj::StringPtr> inPorts,
+    std::map<int, kj::StringPtr> outPorts)
+    : self(self), conMan(conMan) {
+    for (auto [portId, portName] : inPorts) {
+      this->inPortCaps.insert(portId, nullptr);
+      this->inPortName2Id.insert(kj::str(portName), portId);
+      //this->inPortSRs.insert(portId, kj::str(get<2>(inPort)));
+      this->inPortsConnected.insert(portId, false);
+    }
+    for (auto [portId, portName] : outPorts) {
+      this->outPortCaps.insert(portId, nullptr);
+      this->outPortName2Id.insert(kj::str(portName), portId);
+      //this->outPortSRs.insert(portId, kj::str(get<2>(outPort)));
+      this->outPortsConnected.insert(portId, false);
+    }
+  }
+
   ~Impl() = default;
 
   void connect() {
@@ -77,6 +97,34 @@ struct PortConnector::Impl {
     }
     for (auto &e : outPortSRs) {
       connectToSR(e.key, e.value, false);
+    }
+  }
+
+  void connectFromConfig(kj::StringPtr configReaderSR) {
+    typedef mas::schema::fbp::Channel<mas::schema::fbp::IIP>::ChanReader IIPChanReader;
+    auto reader = conMan.tryConnectB(configReaderSR).castAs<IIPChanReader>();
+    auto msg = reader.readRequest().send().wait(conMan.ioContext().waitScope);
+    if (msg.isDone()) {
+      //return kj::mv(newPortIds);
+    } else if (msg.hasValue() && msg.getValue().hasContent() && msg.getValue().getContent().hasT()) {
+      auto tomlTxt = msg.getValue().getContent().getT();
+      try {
+        tomlConfig = toml::parse(tomlTxt.cStr());
+        const auto portsSection = tomlConfig["ports"];
+        const auto inPortsSection = portsSection["in"];
+        for (auto [portName, portTable] : *inPortsSection.as_table()) {
+          auto key = portName;
+          KJ_IF_MAYBE(portId, inPortName2Id.find(kj::StringPtr(key.data()))) {
+            auto port = *portTable.as_table();
+            auto sr = *port["sr"].as_string();
+            if (!sr->empty()) {
+              connectToSR(*portId, sr.get(), true);
+            }
+          }
+        }
+      } catch (const toml::parse_error& err) {
+        KJ_LOG(INFO, "Parsing TOML configuration failed. Error:\n", err.what(), "\nTOML:\n", tomlTxt.cStr());
+      }
     }
   }
 
@@ -171,16 +219,23 @@ struct PortConnector::Impl {
   }
 };
 
-PortConnector::PortConnector(ConnectionManager& conMan,
-             std::initializer_list<std::tuple<int, kj::StringPtr, kj::StringPtr>> inPorts,
-             std::initializer_list<std::tuple<int, kj::StringPtr, kj::StringPtr>> outPorts,
-             bool interactive)
-: impl(kj::heap<Impl>(*this, conMan,
-  inPorts, outPorts)) {}
+// PortConnector::PortConnector(ConnectionManager& conMan,
+//              std::initializer_list<std::tuple<int, kj::StringPtr, kj::StringPtr>> inPorts,
+//              std::initializer_list<std::tuple<int, kj::StringPtr, kj::StringPtr>> outPorts)
+// : impl(kj::heap<Impl>(*this, conMan,
+//   inPorts, outPorts)) {}
 
-void PortConnector::connect() {
-  impl->connect();
+PortConnector::PortConnector(ConnectionManager &conMan, std::map<int, kj::StringPtr> inPorts,
+  std::map<int, kj::StringPtr> outPorts)
+  : impl(kj::heap<Impl>(*this, conMan, inPorts, outPorts)) {}
+
+void PortConnector::connectFromConfig(kj::StringPtr configReaderSR) {
+  impl->connectFromConfig(configReaderSR);
 }
+
+// void PortConnector::connect() {
+//   impl->connect();
+// }
 
 kj::Vector<int> PortConnector::connectInteractively(kj::StringPtr newPortInfoReaderSr,
     std::initializer_list<std::initializer_list<int>> andOrPortIds) {

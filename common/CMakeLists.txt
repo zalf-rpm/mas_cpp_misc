@@ -99,6 +99,8 @@ GroupSources("util" "${PROJECT_SOURCE_DIR}/..")
 #------------------------------------------------------------------------------
 
 find_package(unofficial-sodium CONFIG REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(tomlplusplus REQUIRED IMPORTED_TARGET tomlplusplus)
 
 # create common_lib
 add_library(common_lib
@@ -126,6 +128,7 @@ target_link_libraries(common_lib
 	helpers_lib
 	json11_lib
 	unofficial-sodium::sodium
+	PkgConfig::tomlplusplus
 )
 target_include_directories(common_lib 
 	PUBLIC

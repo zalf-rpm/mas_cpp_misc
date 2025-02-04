@@ -31,21 +31,27 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include <capnp/any.h>
 #include <capnp/rpc-twoparty.h>
 
+#include <toml++/toml.hpp>
+
 #include "common.capnp.h"
 #include "fbp.capnp.h"
 #include "rpc-connection-manager.h"
 
 namespace mas::infrastructure::common {
 
-class PortConnector { //final : public mas::schema::fbp::PortCallbackRegistrar::PortCallback::Server {
+class PortConnector {
 public:
-  PortConnector(ConnectionManager &conMan,
-    std::initializer_list<std::tuple<int, kj::StringPtr, kj::StringPtr>> inPorts,
-    std::initializer_list<std::tuple<int, kj::StringPtr, kj::StringPtr>> outPorts, bool interactive = false);
+  // PortConnector(ConnectionManager &conMan,
+  //   std::initializer_list<std::tuple<int, kj::StringPtr, kj::StringPtr>> inPorts,
+  //   std::initializer_list<std::tuple<int, kj::StringPtr, kj::StringPtr>> outPorts);
+
+  PortConnector(ConnectionManager &conMan, std::map<int, kj::StringPtr> inPorts,
+    std::map<int, kj::StringPtr> outPorts);
 
   ~PortConnector() = default;
 
-  void connect();
+  void connectFromConfig(kj::StringPtr configReaderSR);
+  //void connect();
 
   kj::Vector<int> connectInteractively(kj::StringPtr newPortInfoReaderSr,
     std::initializer_list<std::initializer_list<int>> andOrPortIds);
