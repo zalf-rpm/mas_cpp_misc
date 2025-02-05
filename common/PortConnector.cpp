@@ -107,24 +107,39 @@ struct PortConnector::Impl {
     auto msg = reader.readRequest().send().wait(conMan.ioContext().waitScope);
     if (msg.isDone()) {
       //return kj::mv(newPortIds);
-    } else if (msg.hasValue() && msg.getValue().hasContent() && msg.getValue().getContent().hasT()) {
-      auto tomlTxt = msg.getValue().getContent().getT();
-      try {
-        tomlConfig = toml::parse(tomlTxt.cStr());
-        const auto portsSection = tomlConfig["ports"];
-        const auto inPortsSection = portsSection["in"];
-        for (auto [portName, portTable] : *inPortsSection.as_table()) {
-          auto key = portName;
-          KJ_IF_MAYBE(portId, inPortName2Id.find(kj::StringPtr(key.data()))) {
-            auto port = *portTable.as_table();
-            auto sr = *port["sr"].as_string();
-            if (!sr->empty()) {
-              connectToSR(*portId, sr.get(), true);
+    } else if (msg.hasValue() && msg.getValue().hasContent()) {
+      auto tomlST = msg.getValue().getContent().getAs<mas::schema::common::StructuredText>();
+      if (tomlST.hasValue() && tomlST.getStructure().isToml()) {
+        try {
+          auto tomlConfigTxt = tomlST.getValue().cStr();
+          KJ_LOG(INFO, "TOML configuration:\n", tomlConfigTxt);
+          tomlConfig = toml::parse(tomlConfigTxt);
+          const auto portsSection = tomlConfig["ports"];
+          const auto inPortsSection = portsSection["in"];
+          for (auto [portName, portTable] : *inPortsSection.as_table()) {
+            auto key = portName;
+            KJ_IF_MAYBE(portId, inPortName2Id.find(kj::StringPtr(key.data()))) {
+              auto port = *portTable.as_table();
+              auto sr = *port["sr"].as_string();
+              if (!sr->empty()) {
+                connectToSR(*portId, sr.get(), true);
+              }
             }
           }
+          const auto outPortsSection = portsSection["out"];
+          for (auto [portName, portTable] : *outPortsSection.as_table()) {
+            auto key = portName;
+            KJ_IF_MAYBE(portId, outPortName2Id.find(kj::StringPtr(key.data()))) {
+              auto port = *portTable.as_table();
+              auto sr = *port["sr"].as_string();
+              if (!sr->empty()) {
+                connectToSR(*portId, sr.get(), false);
+              }
+            }
+          }
+        } catch (const toml::parse_error& err) {
+          KJ_LOG(INFO, "Parsing TOML configuration failed. Error:\n", err.what(), "\nTOML:\n", tomlST.getValue().cStr());
         }
-      } catch (const toml::parse_error& err) {
-        KJ_LOG(INFO, "Parsing TOML configuration failed. Error:\n", err.what(), "\nTOML:\n", tomlTxt.cStr());
       }
     }
   }
