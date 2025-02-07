@@ -42,35 +42,15 @@ struct PortConnector::Impl {
   kj::HashMap<int, kj::String> inPortSRs;
   kj::HashMap<int, bool> inPortsConnected;
   kj::HashMap<int, Channel::ChanWriter::Client> outPortCaps;
+  kj::HashMap<int, kj::Vector<Channel::ChanWriter::Client>> outArrayPortCaps;
+  kj::HashMap<int, kj::String> outPortId2Name;
   kj::HashMap<kj::String, int> outPortName2Id;
   kj::HashMap<int, kj::String> outPortSRs;
   kj::HashMap<int, bool> outPortsConnected;
+  kj::HashMap<int, kj::Vector<bool>> outArrayPortsConnected;
   ConnectionManager &conMan;
-  //mas::schema::fbp::PortCallbackRegistrar::Client portCallbackRegistrar{nullptr};
-  //mas::schema::fbp::PortCallbackRegistrar::PortCallback::Client portCallback{nullptr};
-  //kj::HashMap<int, std::vector<int>> andOrPortIds;
   kj::Own<kj::PromiseFulfiller<void>> necessaryPortsConnected;
   toml::table tomlConfig;
-
-  Impl(PortConnector &self, ConnectionManager& conMan,
-    std::initializer_list<std::tuple<int, kj::StringPtr, kj::StringPtr>> inPorts,
-    std::initializer_list<std::tuple<int, kj::StringPtr, kj::StringPtr>> outPorts)
-    : self(self), conMan(conMan) { //, portCallback(kj::heap<PortCallback>(*this)) {
-    for (auto &inPort : inPorts) {
-      int portId = get<0>(inPort);
-      this->inPortCaps.insert(portId, nullptr);
-      this->inPortName2Id.insert(kj::str(get<1>(inPort)), portId);
-      this->inPortSRs.insert(portId, kj::str(get<2>(inPort)));
-      this->inPortsConnected.insert(portId, false);
-    }
-    for (auto &outPort : outPorts) {
-      int portId = get<0>(outPort);
-      this->outPortCaps.insert(portId, nullptr);
-      this->outPortName2Id.insert(kj::str(get<1>(outPort)), portId);
-      this->outPortSRs.insert(portId, kj::str(get<2>(outPort)));
-      this->outPortsConnected.insert(portId, false);
-    }
-  }
 
   Impl(PortConnector &self, ConnectionManager& conMan,
     std::map<int, kj::StringPtr> inPorts,
@@ -84,6 +64,7 @@ struct PortConnector::Impl {
     }
     for (auto [portId, portName] : outPorts) {
       this->outPortCaps.insert(portId, nullptr);
+      this->outPortId2Name.insert(portId, kj::str(portName));
       this->outPortName2Id.insert(kj::str(portName), portId);
       //this->outPortSRs.insert(portId, kj::str(get<2>(outPort)));
       this->outPortsConnected.insert(portId, false);
@@ -94,10 +75,10 @@ struct PortConnector::Impl {
 
   void connect() {
     for (auto &e : inPortSRs) {
-      connectToSR(e.key, e.value, true);
+      connectToSR(e.key, e.value, IN);
     }
     for (auto &e : outPortSRs) {
-      connectToSR(e.key, e.value, false);
+      connectToSR(e.key, e.value, OUT);
     }
   }
 
@@ -122,7 +103,7 @@ struct PortConnector::Impl {
               auto port = *portTable.as_table();
               auto sr = *port["sr"].as_string();
               if (!sr->empty()) {
-                connectToSR(*portId, sr.get(), true);
+                connectToSR(*portId, sr.get(), IN);
               }
             }
           }
@@ -130,10 +111,21 @@ struct PortConnector::Impl {
           for (auto [portName, portTable] : *outPortsSection.as_table()) {
             auto key = portName;
             KJ_IF_MAYBE(portId, outPortName2Id.find(kj::StringPtr(key.data()))) {
-              auto port = *portTable.as_table();
-              auto sr = *port["sr"].as_string();
-              if (!sr->empty()) {
-                connectToSR(*portId, sr.get(), false);
+              if (portTable.is_array_of_tables()) {
+                auto aot = *portTable.as_array();
+                for (const auto& node : aot) {
+                  const auto& currentPort = *node.as_table();
+                  auto sr = *currentPort["sr"].as_string();
+                  if (!sr->empty()) {
+                    connectToSR(*portId, sr.get(), ARRAY_OUT);
+                  }
+                }
+              } else {
+                auto port = *portTable.as_table();
+                auto sr = *port["sr"].as_string();
+                if (!sr->empty()) {
+                  connectToSR(*portId, sr.get(), OUT);
+                }
               }
             }
           }
@@ -144,102 +136,44 @@ struct PortConnector::Impl {
     }
   }
 
-  void connectToSR(int portId, kj::StringPtr sr, bool isInPort) {
-    if (isInPort) {
+  enum PortType { IN, OUT, ARRAY_OUT };
+  void connectToSR(int portId, kj::StringPtr sr, PortType portType) {
+    switch (portType) {
+    case IN: {
       if (sr != nullptr && sr.size() > 0) {
         auto reader = conMan.tryConnectB(sr).castAs<Channel::ChanReader>();
         inPortCaps.upsert(portId, kj::mv(reader));
         inPortsConnected.upsert(portId, true);
       }
-    } else {
+      break;
+    }
+    case OUT:{
       if (sr != nullptr && sr.size() > 0) {
         auto writer = conMan.tryConnectB(sr).castAs<Channel::ChanWriter>();
         outPortCaps.upsert(portId, kj::mv(writer));
         outPortsConnected.upsert(portId, true);
       }
+      break;
     }
-  }
-
-  kj::Vector<int> connectInteractively(kj::StringPtr newPortInfoReaderSr,
-    std::initializer_list<std::initializer_list<int>> andOrPortIdsInit) {
-    kj::HashMap<int, std::vector<int>> andOrPortIds;
-    int i = 0;
-    for (auto l : andOrPortIdsInit) {
-      andOrPortIds.insert(i++, l);
-    }
-
-    kj::Vector<int> newPortIds;
-
-    auto portInfoReader = conMan.tryConnectB(newPortInfoReaderSr).castAs<mas::schema::fbp::Channel<mas::schema::fbp::NewPortInfo>::ChanReader>();
-    while (true) {
-      auto msg = portInfoReader.readRequest().send().wait(conMan.ioContext().waitScope);
-      if (msg.isDone()) {
-        return kj::mv(newPortIds);
-      } else if (msg.hasValue()) {
-        int newPortId = -1;
-        auto newPortInfo = msg.getValue();
-        if (newPortInfo.hasName()) {
-          auto name = newPortInfo.getName();
-          if (newPortInfo.hasInPortReaderCap() || newPortInfo.hasInPortReaderSR()){
-            KJ_IF_MAYBE(portId, inPortName2Id.find(name)) {
-              if (newPortInfo.hasInPortReaderCap()) {
-                inPortCaps.upsert(*portId, newPortInfo.getInPortReaderCap());
-                inPortsConnected.upsert(*portId, true);
-                newPortId = *portId;
-              } else if (newPortInfo.hasInPortReaderSR()) {
-                auto sr = newPortInfo.getInPortReaderSR();
-                inPortSRs.upsert(*portId, kj::str(sr));
-                connectToSR(*portId, sr, true);
-                newPortId = *portId;
-              } else {
-                inPortsConnected.upsert(*portId, false);
-              }
-            }
-          } else if (newPortInfo.hasOutPortWriterCap() || newPortInfo.hasOutPortWriterSR()){
-            KJ_IF_MAYBE(portId, outPortName2Id.find(name)) {
-              if (newPortInfo.hasOutPortWriterCap()) {
-                outPortCaps.upsert(*portId, newPortInfo.getOutPortWriterCap());
-                outPortsConnected.upsert(*portId, true);
-                newPortId = *portId;
-              } else if (newPortInfo.hasOutPortWriterSR()) {
-                auto sr = newPortInfo.getOutPortWriterSR();
-                outPortSRs.upsert(*portId, kj::str(sr));
-                connectToSR(*portId, sr, false);
-                newPortId = *portId;
-              } else {
-                outPortsConnected.upsert(*portId, false);
-              }
-            }
-          }
+    case ARRAY_OUT:{
+      if (sr != nullptr && sr.size() > 0) {
+        auto writer = conMan.tryConnectB(sr).castAs<Channel::ChanWriter>();
+        KJ_IF_MAYBE(cap_vec, outArrayPortCaps.find(portId)) {
+          cap_vec->add(kj::mv(writer));
+        } else {
+          kj::Vector<Channel::ChanWriter::Client> vec;
+          vec.add(kj::mv(writer));
+          outArrayPortCaps.insert(portId, kj::mv(vec));
+          kj::Vector<bool> vec2;
+          vec2.add(true);
+          outArrayPortsConnected.upsert(portId, kj::mv(vec2));
         }
-
-        int removeIndex = -1;
-        for (auto& e : andOrPortIds) {
-          for (auto portId : e.value) {
-            if (portId == newPortId) {
-              removeIndex = e.key;
-              newPortIds.add(newPortId);
-              goto leave;
-            }
-          }
-        }
-        leave:
-          if (removeIndex >= 0) {
-            andOrPortIds.erase(removeIndex);
-          }
-
-        if (andOrPortIds.size() == 0) break;
+        break;
       }
     }
-    return kj::mv(newPortIds);
+    }
   }
 };
-
-// PortConnector::PortConnector(ConnectionManager& conMan,
-//              std::initializer_list<std::tuple<int, kj::StringPtr, kj::StringPtr>> inPorts,
-//              std::initializer_list<std::tuple<int, kj::StringPtr, kj::StringPtr>> outPorts)
-// : impl(kj::heap<Impl>(*this, conMan,
-//   inPorts, outPorts)) {}
 
 PortConnector::PortConnector(ConnectionManager &conMan, std::map<int, kj::StringPtr> inPorts,
   std::map<int, kj::StringPtr> outPorts)
@@ -249,25 +183,16 @@ void PortConnector::connectFromConfig(kj::StringPtr configReaderSR) {
   impl->connectFromConfig(configReaderSR);
 }
 
-// void PortConnector::connect() {
-//   impl->connect();
-// }
-
-kj::Vector<int> PortConnector::connectInteractively(kj::StringPtr newPortInfoReaderSr,
-    std::initializer_list<std::initializer_list<int>> andOrPortIds) {
-  return impl->connectInteractively(newPortInfoReaderSr, andOrPortIds);
-}
-
 PortConnector::Channel::ChanReader::Client PortConnector::in(int inPortId) {
   Channel::ChanReader::Client def(nullptr);
   return impl->inPortCaps.find(inPortId).orDefault(def);
 }
 
-bool PortConnector::inIsConnected(int inPortId) const {
+bool PortConnector::isInConnected(int inPortId) const {
   return impl->inPortsConnected.find(inPortId).orDefault(false);
 }
 
-void PortConnector::inSetDisconnected(int inPortId) {
+void PortConnector::setInDisconnected(int inPortId) {
   impl->inPortsConnected.upsert(inPortId, false);
 }
 
@@ -276,6 +201,46 @@ PortConnector::Channel::ChanWriter::Client PortConnector::out(int outPortId) {
   return impl->outPortCaps.find(outPortId).orDefault(def);
 }
 
-bool PortConnector::outIsConnected(int outPortId) const {
+PortConnector::Channel::ChanWriter::Client PortConnector::arrOut(int outPortId, int portIndex) {
+  Channel::ChanWriter::Client def(nullptr);
+  KJ_IF_MAYBE(vec, impl->outArrayPortCaps.find(outPortId)) {
+    if (portIndex < vec->size()) {
+      return (*vec)[portIndex];
+    }
+  }
+  return def;
+}
+
+bool PortConnector::isOutConnected(int outPortId) const {
   return impl->outPortsConnected.find(outPortId).orDefault(false);
+}
+
+bool PortConnector::isArrOutConnected(int outPortId, int portIndex) const {
+  KJ_IF_MAYBE(vec, impl->outArrayPortsConnected.find(outPortId)) {
+    if (portIndex < vec->size()) {
+      return (*vec)[portIndex];
+    }
+  }
+  return false;
+}
+
+void PortConnector::closeOutPorts() {
+  for (auto [portId, writer] : impl->outPortCaps) {
+    if (isOutConnected(portId)) {
+      auto name = impl->outPortId2Name.find(portId);
+      KJ_LOG(INFO, kj::str("closing", name.orDefault(kj::str(portId)), "OUT port"));
+      writer.closeRequest().send().wait(impl->conMan.ioContext().waitScope);
+    }
+  }
+  for (auto& [portId, vecOfWriters] : impl->outArrayPortCaps) {
+    int i = 0;
+    auto name = impl->outPortId2Name.find(portId);
+    for (auto &writer : vecOfWriters) {
+      if (isArrOutConnected(portId, i)) {
+        KJ_LOG(INFO, kj::str("closing ", name.orDefault(kj::str(portId)), " OUT port"));
+        writer.closeRequest().send().wait(impl->conMan.ioContext().waitScope);
+      }
+      i++;
+    }
+  }
 }

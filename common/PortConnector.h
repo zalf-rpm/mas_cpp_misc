@@ -40,29 +40,23 @@ namespace mas::infrastructure::common {
 
 class PortConnector {
 public:
-  // PortConnector(ConnectionManager &conMan,
-  //   std::initializer_list<std::tuple<int, kj::StringPtr, kj::StringPtr>> inPorts,
-  //   std::initializer_list<std::tuple<int, kj::StringPtr, kj::StringPtr>> outPorts);
-
-  PortConnector(ConnectionManager &conMan, std::map<int, kj::StringPtr> inPorts,
-    std::map<int, kj::StringPtr> outPorts);
+  PortConnector(ConnectionManager &conMan, std::map<int, kj::StringPtr> inPorts, std::map<int, kj::StringPtr> outPorts);
 
   ~PortConnector() = default;
 
   void connectFromConfig(kj::StringPtr configReaderSR);
-  //void connect();
-
-  kj::Vector<int> connectInteractively(kj::StringPtr newPortInfoReaderSr,
-    std::initializer_list<std::initializer_list<int>> andOrPortIds);
 
   typedef mas::schema::fbp::IP IP;
   typedef mas::schema::fbp::Channel<IP> Channel;
   Channel::ChanReader::Client in(int inPortId);
-  bool inIsConnected(int inPortId) const;
-  void inSetDisconnected(int inPortId);
+  bool isInConnected(int inPortId) const;
+  void setInDisconnected(int inPortId);
 
   Channel::ChanWriter::Client out(int outPortId);
-  bool outIsConnected(int outPortId) const;
+  Channel::ChanWriter::Client arrOut(int outPortId, int portIndex);
+  bool isOutConnected(int outPortId) const;
+  bool isArrOutConnected(int outPortId, int portIndex) const;
+  void closeOutPorts();
 
   struct Impl;
 private:
