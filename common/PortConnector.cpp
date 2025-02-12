@@ -82,55 +82,36 @@ struct PortConnector::Impl {
     }
   }
 
-  void connectFromConfig(kj::StringPtr configReaderSR) {
-    typedef mas::schema::fbp::Channel<mas::schema::fbp::IIP>::ChanReader IIPChanReader;
-    auto reader = conMan.tryConnectB(configReaderSR).castAs<IIPChanReader>();
+  void connectFromPortInfos(kj::StringPtr portInfosReaderSR) {
+    typedef mas::schema::fbp::Channel<mas::schema::fbp::PortInfos>::ChanReader PIReader;
+    auto reader = conMan.tryConnectB(portInfosReaderSR).castAs<PIReader>();
     auto msg = reader.readRequest().send().wait(conMan.ioContext().waitScope);
     if (msg.isDone()) {
-      //return kj::mv(newPortIds);
-    } else if (msg.hasValue() && msg.getValue().hasContent()) {
-      auto tomlST = msg.getValue().getContent().getAs<mas::schema::common::StructuredText>();
-      if (tomlST.hasValue() && tomlST.getStructure().isToml()) {
-        try {
-          auto tomlConfigTxt = tomlST.getValue().cStr();
-          KJ_LOG(INFO, "TOML configuration:\n", tomlConfigTxt);
-          tomlConfig = toml::parse(tomlConfigTxt);
-          const auto portsSection = tomlConfig["ports"];
-          const auto inPortsSection = portsSection["in"];
-          for (auto [portName, portTable] : *inPortsSection.as_table()) {
-            auto key = portName;
-            KJ_IF_MAYBE(portId, inPortName2Id.find(kj::StringPtr(key.data()))) {
-              auto port = *portTable.as_table();
-              auto sr = *port["sr"].as_string();
-              if (!sr->empty()) {
-                connectToSR(*portId, sr.get(), IN);
+      return;
+    } else if (msg.hasValue()) {
+      if (msg.getValue().hasInPorts()) {
+        for (auto nameAndSr : msg.getValue().getInPorts()) {
+          if (nameAndSr.hasName() && nameAndSr.hasSr()) {
+            auto key = nameAndSr.getName();
+            KJ_IF_MAYBE(portId, inPortName2Id.find(key)) {
+              connectToSR(*portId, nameAndSr.getSr(), IN);
+            }
+          }
+        }
+      }
+      if (msg.getValue().hasOutPorts()){
+        for (auto nameAndSr : msg.getValue().getOutPorts()) {
+          KJ_IF_MAYBE(portId, outPortName2Id.find(nameAndSr.getName())) {
+            if (nameAndSr.hasName()){
+              if (nameAndSr.hasSrs()) {
+                for (auto sr : nameAndSr.getSrs()) {
+                  connectToSR(*portId, sr, ARRAY_OUT);
+                }
+              } else if (nameAndSr.hasSr()) {
+                connectToSR(*portId, nameAndSr.getSr(), OUT);
               }
             }
           }
-          const auto outPortsSection = portsSection["out"];
-          for (auto [portName, portTable] : *outPortsSection.as_table()) {
-            auto key = portName;
-            KJ_IF_MAYBE(portId, outPortName2Id.find(kj::StringPtr(key.data()))) {
-              if (portTable.is_array_of_tables()) {
-                auto aot = *portTable.as_array();
-                for (const auto& node : aot) {
-                  const auto& currentPort = *node.as_table();
-                  auto sr = *currentPort["sr"].as_string();
-                  if (!sr->empty()) {
-                    connectToSR(*portId, sr.get(), ARRAY_OUT);
-                  }
-                }
-              } else {
-                auto port = *portTable.as_table();
-                auto sr = *port["sr"].as_string();
-                if (!sr->empty()) {
-                  connectToSR(*portId, sr.get(), OUT);
-                }
-              }
-            }
-          }
-        } catch (const toml::parse_error& err) {
-          KJ_LOG(INFO, "Parsing TOML configuration failed. Error:\n", err.what(), "\nTOML:\n", tomlST.getValue().cStr());
         }
       }
     }
@@ -179,8 +160,8 @@ PortConnector::PortConnector(ConnectionManager &conMan, std::map<int, kj::String
   std::map<int, kj::StringPtr> outPorts)
   : impl(kj::heap<Impl>(*this, conMan, inPorts, outPorts)) {}
 
-void PortConnector::connectFromConfig(kj::StringPtr configReaderSR) {
-  impl->connectFromConfig(configReaderSR);
+void PortConnector::connectFromPortInfos(kj::StringPtr portInfosReaderSR) {
+  impl->connectFromPortInfos(portInfosReaderSR);
 }
 
 PortConnector::Channel::ChanReader::Client PortConnector::in(int inPortId) {

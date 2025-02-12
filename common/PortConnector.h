@@ -44,7 +44,7 @@ public:
 
   ~PortConnector() = default;
 
-  void connectFromConfig(kj::StringPtr configReaderSR);
+  void connectFromPortInfos(kj::StringPtr portInfosReaderSR);
 
   typedef mas::schema::fbp::IP IP;
   typedef mas::schema::fbp::Channel<IP> Channel;
