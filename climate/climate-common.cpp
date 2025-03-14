@@ -362,13 +362,23 @@ DataAccessor::DataAccessor(json11::Json j) {
 }
 
 Errors DataAccessor::merge(json11::Json j) {
-  for (const auto &acd2data: j["data"].object_items())
+  Errors res = Json11Serializable::merge(j);
+  for (const auto &acd2data: j["data"].object_items()) {
     addOrReplaceClimateData(ACD(stoi(acd2data.first)), double_vector(acd2data.second));
+  }
 
-  set_iso_date_value(_startDate, j, "startDate");
-  set_iso_date_value(_endDate, j, "endDate");
+  try {
+    set_iso_date_value(_startDate, j, "startDate");
+  } catch (const std::exception &e) {
+    res.appendError(kj::str("Climate data: Couldn't parse startDate as iso-date: ", j["startDate"].dump(), "! Exception: ", e.what()).cStr());
+  }
+  try {
+    set_iso_date_value(_endDate, j, "endDate");
+  } catch (const std::exception &e) {
+    res.appendError(kj::str("Climate data: Couldn't parse endDate as iso-date: ", j["endDate"].dump(), "! Exception: ", e.what()).cStr());
+  }
 
-  return {};
+  return res;
 }
 
 json11::Json DataAccessor::to_json() const {
