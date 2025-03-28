@@ -59,7 +59,17 @@ enum AvailableClimateData {
   o3 = 18,
   et0 = 19,
   skip = 20,
-  patternDate = 21
+  patternDate = 21,
+  x1 = 22,
+  x2 = 23,
+  x3 = 24,
+  x4 = 25,
+  x5 = 26,
+  x6 = 27,
+  x7 = 28,
+  x8 = 29,
+  x9 = 30,
+  x10 = 31,
 };
 
 //! just a shortcut to the quite long name
