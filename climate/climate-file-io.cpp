@@ -308,7 +308,7 @@ Climate::readClimateDataFromCSVInputStream(std::istream& is,
 
     Date date;
     vector<bool> usedVs(availableClimateDataSize(), false);
-    vector<double> vs(availableClimateDataSize(), false);
+    vector<double> vs(availableClimateDataSize(), 0.0);
     try {
       for (size_t i = 0; i < hSize; i++) {
         ACD acdi = header.at(i);

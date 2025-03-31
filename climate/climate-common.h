@@ -70,6 +70,7 @@ enum AvailableClimateData {
   x8 = 29,
   x9 = 30,
   x10 = 31,
+  last
 };
 
 //! just a shortcut to the quite long name
@@ -98,8 +99,18 @@ inline std::map<std::string, ACD> name2acd() {
        {"iso-date",    isoDate},
        {"de-date",     deDate},
        {"skip",        skip},
-       {"et0",         et0},
-       {"pattern-date", patternDate}
+       {"et0", et0},
+       {"pattern-date", patternDate},
+       {"x1", x1},
+       {"x2", x2},
+       {"x3", x3},
+       {"x4", x4},
+       {"x5", x5},
+       {"x6", x6},
+       {"x7", x7},
+       {"x8", x8},
+       {"x9", x9},
+       {"x10", x10},
       };
 };
 
@@ -111,7 +122,7 @@ inline std::map<std::string, ACD> name2acd() {
   * last element -> to not pollute the enum)
   * @return number of elements in the AvailableClimateData enumeration
   */
-inline unsigned int availableClimateDataSize() { return int(skip) + 1; }
+inline unsigned int availableClimateDataSize() { return int(last) + 1; }
 
 //! just a shortcut for a list (vector) of climate data elements
 typedef std::vector<AvailableClimateData> ACDV;
