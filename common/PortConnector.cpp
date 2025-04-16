@@ -209,7 +209,7 @@ void PortConnector::closeOutPorts() {
   for (auto [portId, writer] : impl->outPortCaps) {
     if (isOutConnected(portId)) {
       auto name = impl->outPortId2Name.find(portId);
-      KJ_LOG(INFO, kj::str("closing", name.orDefault(kj::str(portId)), "OUT port"));
+      KJ_LOG(INFO, kj::str("closing ", name.orDefault(kj::str(portId)), " OUT port"));
       writer.closeRequest().send().wait(impl->conMan.ioContext().waitScope);
     }
   }
