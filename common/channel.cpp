@@ -35,6 +35,26 @@ using namespace std;
 using namespace mas::infrastructure::common;
 
 struct Channel::Impl {
+  struct BlockingReadAdapter {
+    BlockingReadAdapter(kj::PromiseFulfiller<void>& fulfiller, Impl& impl)
+      : fulfiller(fulfiller), impl(impl) {
+      impl.blockingReadAdapters.push_front(this);
+    }
+    ~BlockingReadAdapter() {
+      cout << "destructing BlockingReadAdapter" << endl;
+      impl.blockingReadAdapters.pop_back();
+      //if (pos != impl.timers.end()) {
+      //  impl.timers.erase(pos);
+      //}
+    }
+    void fulfill() {
+      fulfiller.fulfill();
+      //impl.blockingReadAdapters.pop_back();
+    }
+  private:
+    kj::PromiseFulfiller<void>& fulfiller;
+    Impl& impl;
+  };
   Channel &self;
   mas::infrastructure::common::Restorer *restorer{nullptr};
   kj::String id;
@@ -42,7 +62,9 @@ struct Channel::Impl {
   kj::String description;
   kj::HashMap<kj::String, AnyPointerChannel::ChanReader::Client> readers;
   kj::HashMap<kj::String, AnyPointerChannel::ChanWriter::Client> writers;
-  std::deque<kj::Own<kj::PromiseFulfiller<kj::Maybe<AnyPointerMsg::Reader>>>> blockingReadFulfillers;
+  //std::deque<kj::Own<kj::PromiseFulfiller<kj::Maybe<AnyPointerMsg::Reader>>>> blockingReadFulfillers;
+  //std::deque<kj::Own<kj::PromiseFulfiller<void>>> blockingReadFulfillers;
+  std::deque<BlockingReadAdapter*> blockingReadAdapters;
   std::deque<kj::Own<kj::PromiseFulfiller<void>>> blockingWriteFulfillers;
   uint64_t bufferSize{1};
   std::deque<kj::Own<kj::Decay<AnyPointerMsg::Reader>>> buffer;
@@ -119,14 +141,17 @@ void Channel::closedWriter(kj::StringPtr writerId) {
 
     // as we just received a done message which should be distributed and would
     // fill the buffer, unblock all readers, so they send the done message
-    while (kj::size(impl->blockingReadFulfillers) > 0) {
-      auto &brf = impl->blockingReadFulfillers.back();
-      brf->fulfill(nullptr);//kj::Maybe<AnyPointerMsg::Reader>());
-      impl->blockingReadFulfillers.pop_back();
+    //while (kj::size(impl->blockingReadFulfillers) > 0) {
+    while (kj::size(impl->blockingReadAdapters) > 0) {
+      impl->blockingReadAdapters.back()->fulfill();
+      // auto &brf = impl->blockingReadFulfillers.back();
+      // brf->fulfill();
+      // impl->blockingReadFulfillers.pop_back();
       KJ_LOG(INFO, "Channel::closedWriter: sent done to reader on last finished writer");
       //cout << "Channel::closedWriter: sent done to reader on last finished writer" << endl;
     }
-    KJ_LOG(INFO, kj::size(impl->blockingReadFulfillers));
+    //KJ_LOG(INFO, kj::size(impl->blockingReadFulfillers));
+    KJ_LOG(INFO, kj::size(impl->blockingReadAdapters));
     KJ_LOG(INFO, kj::size(impl->blockingWriteFulfillers));
   }
 }
@@ -194,31 +219,37 @@ kj::Promise<void> Reader::read(ReadContext context) {
       c.closedReader(id());
 
       // if there are other readers waiting close them as well
-      while (!c.impl->blockingReadFulfillers.empty()) {
+      //while (!c.impl->blockingReadFulfillers.empty()) {
+      while (!c.impl->blockingReadAdapters.empty()) {
         KJ_LOG(INFO, "Reader::read: close other waiting readers");
-        auto &&brf = c.impl->blockingReadFulfillers.back();
-        brf->fulfill(nullptr);
-        c.impl->blockingReadFulfillers.pop_back();
+        auto bra = c.impl->blockingReadAdapters.back();
+        bra->fulfill();
+        // auto &&brf = c.impl->blockingReadFulfillers.back();
+        // brf->fulfill();
+        // c.impl->blockingReadFulfillers.pop_back();
       }
     } else { // block because no value to read
       KJ_LOG(INFO, "Reader::read: block, because no value to read");
-      auto paf = kj::newPromiseAndFulfiller<kj::Maybe<AnyPointerMsg::Reader>>();
-      c.impl->blockingReadFulfillers.push_front(kj::mv(paf.fulfiller));
-      return paf.promise.then([context, this](kj::Maybe<AnyPointerMsg::Reader> msg) mutable {
+      //auto paf = kj::newPromiseAndFulfiller<void>();
+      //c.impl->blockingReadFulfillers.push_front(kj::mv(paf.fulfiller));
+      auto nap = kj::newAdaptedPromise<void, Channel::Impl::BlockingReadAdapter>(*c.impl.get());
+      return nap.then([context, this]() mutable {
+      //return paf.promise.then([context, this]() mutable {
         KJ_REQUIRE(!_closed, "Reader already closed.", _closed);
 
-        if (_channel.impl->sendCloseOnEmptyBuffer && msg == nullptr) {
+        if (_channel.impl->sendCloseOnEmptyBuffer) {
           //KJ_DBG("setResults");
           context.getResults().setDone();
           KJ_LOG(INFO, "Reader::read: promise_lambda: sending done to reader");
           //cout << "Reader::read: promise_lambda: sending done to reader" << endl;
           _channel.closedReader(id());
         } else {
-          KJ_IF_MAYBE(m, msg) {
-            //KJ_DBG("Reader::read setResults");
-            context.getResults().setValue(m->getValue());
-            KJ_LOG(INFO, "Reader::read: promise_lambda: sending value to reader");
-          }
+          auto &b = _channel.impl->buffer;
+          auto &&v = b.back();
+          KJ_ASSERT(v.get()->isValue(), "Msg contains a value, because before buffering we checked for done.");
+          context.getResults().setValue(v.get()->getValue());
+          b.pop_back();
+          KJ_LOG(INFO, "Reader::read: promise_lambda: sending value to reader");
         }
       }, [](kj::Exception &&e) {
         KJ_LOG(ERROR, "Reader::read: promise_lambda: error: ", e.getDescription().cStr());
@@ -252,11 +283,15 @@ kj::Promise<void> Writer::write(WriteContext context) {
     KJ_LOG(INFO, "Writer::write: received done -> remove writer");
     //cout << "Writer::write: received done message id: " << id().cStr() << endl;
     c.closedWriter(id());
-  } else if (!c.impl->blockingReadFulfillers.empty()) { // there's a reader waiting
+  //} else if (!c.impl->blockingReadFulfillers.empty()) { // there's a reader waiting
+  } else if (!c.impl->blockingReadAdapters.empty()) { // there's a reader waiting
     KJ_LOG(INFO, "Writer::write: unblock waiting reader");
-    auto &&brf = c.impl->blockingReadFulfillers.back();
-    brf->fulfill(v);
-    c.impl->blockingReadFulfillers.pop_back();
+    b.push_front(capnp::clone(v));
+    auto bra = c.impl->blockingReadAdapters.back();
+    bra->fulfill();
+    //auto &&brf = c.impl->blockingReadFulfillers.back();
+    //brf->fulfill();
+    //c.impl->blockingReadFulfillers.pop_back();
   } else if (b.size() < c.impl->bufferSize) { // there space to store the message
     KJ_LOG(INFO, "Writer::write: no reader waiting and space in buffer -> storing message");
     b.push_front(capnp::clone(v));
