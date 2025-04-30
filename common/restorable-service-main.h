@@ -49,6 +49,7 @@ public:
   kj::MainBuilder::Validity setRegName(kj::StringPtr n);
   kj::MainBuilder::Validity setRegCategory(kj::StringPtr cat);
   kj::MainBuilder::Validity setOutputSturdyRefs();
+  kj::MainBuilder::Validity setStartupInfoId(kj::StringPtr id);
   kj::MainBuilder::Validity setStartupInfoWriterSR(kj::StringPtr sr);
   kj::MainBuilder::Validity setInitServiceFromContainer(kj::StringPtr init);
 

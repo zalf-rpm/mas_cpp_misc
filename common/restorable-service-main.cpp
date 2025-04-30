@@ -63,6 +63,11 @@ kj::MainBuilder::Validity RestorableServiceMain::setRegCategory(kj::StringPtr ca
 
 kj::MainBuilder::Validity RestorableServiceMain::setOutputSturdyRefs() { outputSturdyRefs = true; return true; }
 
+kj::MainBuilder::Validity RestorableServiceMain::setStartupInfoId(kj::StringPtr id) {
+  startupInfoWriterSRId = kj::str(id);
+  return true;
+}
+
 kj::MainBuilder::Validity RestorableServiceMain::setStartupInfoWriterSR(kj::StringPtr idAndSR) { 
   auto v = splitString(idAndSR, "|");
   if(v.size() == 2) {
@@ -200,6 +205,8 @@ kj::MainBuilder& RestorableServiceMain::addRestorableServiceOptions()
     .addOption({"output_srs"}, KJ_BIND_METHOD(*this, setOutputSturdyRefs),
                 "Output the sturdy refs to the restorer and service to stdout.")
     .addOptionWithArg({"startup_info_writer_sr"}, KJ_BIND_METHOD(*this, setStartupInfoWriterSR),
-                      "<ID>|<sturdy_ref>", "ID to identify and sturdy ref to an output channel writer capability. "
-                      "Outputs the startup info of the service to the writer capability as capnp::AnyPointer.");
+                      "<sturdy_ref>", "Sturdy ref to an output channel writer capability. "
+                      "Outputs the startup info of the service to the writer capability as capnp::AnyPointer.")
+    .addOptionWithArg({"startup_info_id"}, KJ_BIND_METHOD(*this, setStartupInfoId), "<ID>",
+                        "ID to identify the startup info message sent to the output channel writer capability.");
 }
