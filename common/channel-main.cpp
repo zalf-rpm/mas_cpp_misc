@@ -157,7 +157,7 @@ public:
         auto writerSR = restorer->saveStr(writer, srt, nullptr, false, nullptr, false).wait(ioContext.waitScope).sturdyRef;
         if(outputSturdyRefs && writerSR.size() > 0) std::cout << "\twriterSR=" << writerSR.cStr() << std::endl;
         KJ_IF_MAYBE(info, startupInfo){
-          info->getWriterSRs().set(i, writerSR);
+          info->getWriterSRs().set(k, writerSR);
         }
       }
 
