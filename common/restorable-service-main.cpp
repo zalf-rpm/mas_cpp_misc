@@ -196,8 +196,8 @@ kj::MainBuilder& RestorableServiceMain::addRestorableServiceOptions()
                       "<register name (default: --name)>", "Name to register service under.")
     .addOptionWithArg({"reg_category"}, KJ_BIND_METHOD(*this, setRegCategory),
                       "<category (default: monica)>", "Name of the category to register at.")
-    .addOptionWithArg({"local_host (default: localhost)"}, KJ_BIND_METHOD(*this, setLocalHost),
-                      "<IP_or_host_address>", "Use this host for sturdy reference creation.")
+    .addOptionWithArg({"local_host"}, KJ_BIND_METHOD(*this, setLocalHost),
+                      "<IP_or_host_address (default: localhost)>", "Use this host for sturdy reference creation.")
     .addOptionWithArg({"check_IP"}, KJ_BIND_METHOD(*this, setCheckIP),
                       "<IPv4 (default: 8.8.8.8)>", "IP to connect to in order to find local outside IP.")
     .addOptionWithArg({"check_port"}, KJ_BIND_METHOD(*this, setCheckPort),
