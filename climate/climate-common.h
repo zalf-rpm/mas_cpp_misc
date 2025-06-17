@@ -70,6 +70,7 @@ enum AvailableClimateData {
   x8 = 29,
   x9 = 30,
   x10 = 31,
+  daylength = 32,
   last
 };
 
@@ -111,6 +112,7 @@ inline std::map<std::string, ACD> name2acd() {
        {"x8", x8},
        {"x9", x9},
        {"x10", x10},
+        {"daylength", daylength}
       };
 };
 
@@ -251,7 +253,9 @@ public:
 
   bool hasAvailableClimateData(AvailableClimateData acd) const { return _acd2dataIndex[acd] >= 0; }
 
-  std::pair<double, double> dssatTAMPandTAV();
+  std::pair<double, double> getTAMPandTAV();
+  void setTAMPandTAV(double tamp, double tav);
+  std::pair<double, double> calcTAMPandTAV() const;
 
 private: //state
   Tools::Date _startDate;
@@ -265,6 +269,9 @@ private: //state
 
   std::size_t _fromStep{0};
   std::size_t _numberOfSteps{0};
+
+  double _tamp{-9999};
+  double _tav{-9999};
 };
 
 

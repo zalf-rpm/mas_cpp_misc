@@ -308,8 +308,6 @@ YearRange Climate::snapToRaster(YearRange yr, int raster) {
   return {from, to};
 }
 
-//------------------------------------------------------------------------------
-
 DataAccessor::DataAccessor()
     : _data(new VVD), _acd2dataIndex(availableClimateDataSize(), -1) {}
 
@@ -319,15 +317,15 @@ DataAccessor::DataAccessor(Tools::Date startDate,
 
 DataAccessor::DataAccessor(const DataAccessor &other)
     : _startDate(other._startDate), _endDate(other._endDate), _data(other._data), _acd2dataIndex(other._acd2dataIndex),
-      _fromStep(other._fromStep), _numberOfSteps(other._numberOfSteps) {}
+      _fromStep(other._fromStep), _numberOfSteps(other._numberOfSteps), _tamp(other._tamp), _tav(other._tav) {}
 
 DataAccessor::DataAccessor(DataAccessor &&other) noexcept
     : _startDate(kj::mv(other._startDate)), _endDate(kj::mv(other._endDate)), _data(kj::mv(other._data)),
-      _acd2dataIndex(kj::mv(other._acd2dataIndex)), _fromStep(other._fromStep), _numberOfSteps(other._numberOfSteps) {
+      _acd2dataIndex(kj::mv(other._acd2dataIndex)), _fromStep(other._fromStep), _numberOfSteps(other._numberOfSteps),
+_tamp(other._tamp), _tav(other._tav) {
   other._fromStep = 0;
   other._numberOfSteps = 0;
 }
-
 
 DataAccessor& DataAccessor::operator=(const DataAccessor &other) {
   if (this == &other) return *this;
@@ -338,6 +336,8 @@ DataAccessor& DataAccessor::operator=(const DataAccessor &other) {
   _acd2dataIndex = other._acd2dataIndex;
   _fromStep = other._fromStep;
   _numberOfSteps = other._numberOfSteps;
+  _tamp = other._tamp;
+  _tav = other._tav;
 
   return *this;
 }
@@ -353,6 +353,8 @@ DataAccessor& DataAccessor::operator=(DataAccessor &&other) noexcept {
   other._fromStep = 0;
   _numberOfSteps = other._numberOfSteps;
   other._numberOfSteps = 0;
+  _tamp = other._tamp;
+  _tav = other._tav;
 
   return *this;
 }
@@ -378,6 +380,9 @@ Errors DataAccessor::merge(json11::Json j) {
     res.appendError(kj::str("Climate data: Couldn't parse endDate as iso-date: ", j["endDate"].dump(), "! Exception: ", e.what()).cStr());
   }
 
+  set_double_value(_tamp, j, "tamp");
+  set_double_value(_tav, j, "tav");
+
   return res;
 }
 
@@ -395,7 +400,9 @@ json11::Json DataAccessor::to_json() const {
       {{"type",      "DataAccessor"},
        {"data",      data},
        {"startDate", startDate().toIsoDateString()},
-       {"endDate",   endDate().toIsoDateString()}
+       {"endDate",   endDate().toIsoDateString()},
+        {"tamp", _tamp},
+        {"tav", _tav},
       };
 }
 
@@ -579,7 +586,21 @@ void DataAccessor::addOrReplaceClimateData(AvailableClimateData acd,
   }
 }
 
-std::pair<double, double> DataAccessor::dssatTAMPandTAV() {
+std::pair<double, double> DataAccessor::getTAMPandTAV() {
+  if (static_cast<int>(_tamp) == -9999 || static_cast<int>(_tav) == -9999) {
+    auto tt = calcTAMPandTAV();
+    if (static_cast<int>(_tamp) == -9999) _tamp = tt.first;
+    if (static_cast<int>(_tav) == -9999) _tav = tt.second;
+  }
+  return make_pair(_tamp, _tav);
+}
+
+void DataAccessor::setTAMPandTAV(double tamp, double tav) {
+  _tamp = tamp;
+  _tav = tav;
+}
+
+std::pair<double, double> DataAccessor::calcTAMPandTAV() const {
   map<int, vector<double>> month2avgs;
   for(int i = 1; i < 13; i++) month2avgs[i] = vector<double>();
   double sum = 0;
