@@ -494,7 +494,7 @@ DayLengths Tools::dayLengths(double latitude, double julianDay) {
   // Calculation of the atmospheric day lenght -> old DL
   double astroDayLength = declSin / declCos;
   astroDayLength = bound(-1.0, astroDayLength, 1.0); // The argument of asin must be in the range of -1 to 1
-  dls.astronomicDayLenght = 12.0 * (M_PI + 2.0 * asin(astroDayLength)) / M_PI;
+  dls.astronomicDayLength = 12.0 * (M_PI + 2.0 * asin(astroDayLength)) / M_PI;
 
   // Calculation of the effective day length = old DLE
   double edlHelper = (-sin(8.0 * M_PI / 180.0) + declSin) / declCos;

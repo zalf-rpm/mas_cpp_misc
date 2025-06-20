@@ -386,7 +386,7 @@ private:
 };
 
 struct DayLengths {
-  double astronomicDayLenght{-1};
+  double astronomicDayLength{-1};
   double effectiveDayLength{-1};
   double photoperiodicDaylength{-1};
 };
