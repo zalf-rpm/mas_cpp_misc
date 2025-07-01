@@ -331,8 +331,8 @@ kj::Promise<kj::uint> ConnectionManager::bind(capnp::Capability::Client mainInte
 
 kj::Tuple<bool, kj::String>
 mas::infrastructure::common::getLocalIP(kj::StringPtr connectToHost, kj::uint connectToPort) {
-  if (connectToHost == "") connectToHost = "8.8.8.8";
-  if (connectToPort == 0) connectToPort = 53;
+  if (connectToHost == "") connectToHost = "dyn.google";//"8.8.8.8";
+  if (connectToPort == 0) connectToPort = 443;//53;
 
   // taken from https://gist.github.com/listnukira/4045436
   char myIP[16];
