@@ -179,8 +179,8 @@ public:
     return addRestorableServiceOptions()
       .addOptionWithArg({'#', "no_of_channels"}, KJ_BIND_METHOD(*this, setNoOfChannels),
                         "<no_of_channels=1>", "Set the number of channels to start.")
-      .addOptionWithArg({'b', "buffer-size"}, KJ_BIND_METHOD(*this, setBufferSize),
-                        "<buffer-size=1>", "Set buffer size of channel.")
+      .addOptionWithArg({'b', "buffer_size"}, KJ_BIND_METHOD(*this, setBufferSize),
+                        "<buffer_size=1>", "Set buffer size of channel.")
       .addOptionWithArg({'c', "create"}, KJ_BIND_METHOD(*this, setNoOfReaderWriterPairs),
                         "<number_of_reader_writer_pairs (default: 1)>",
                         "Create number of reader/writer pairs per channel.")
