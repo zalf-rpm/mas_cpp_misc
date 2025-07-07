@@ -131,6 +131,11 @@ void Channel::closedWriter(kj::StringPtr writerId) {
   }
 }
 
+kj::Promise<void> Channel::setBufferSize(SetBufferSizeContext context) {
+  impl->bufferSize = context.getParams().getSize();
+  return kj::READY_NOW;
+}
+
 kj::Promise<void> Channel::reader(ReaderContext context) {
   auto r = kj::heap<Reader>(*this);
   auto id = r->id();
@@ -146,6 +151,21 @@ kj::Promise<void> Channel::writer(WriterContext context) {
   AnyPointerChannel::ChanWriter::Client wc = kj::mv(w);
   impl->writers.insert(kj::str(id), wc);
   context.getResults().setW(wc);
+  return kj::READY_NOW;
+}
+
+kj::Promise<void> Channel::endpoints(EndpointsContext context) {
+  return Server::endpoints(context);
+  return kj::READY_NOW;
+}
+
+kj::Promise<void> Channel::setAutoCloseSemantics(SetAutoCloseSemanticsContext context) {
+  impl->autoCloseSemantics = context.getParams().getCs();
+  return kj::READY_NOW;
+}
+
+kj::Promise<void> Channel::close(CloseContext context) {
+  //return Server::close(context);
   return kj::READY_NOW;
 }
 

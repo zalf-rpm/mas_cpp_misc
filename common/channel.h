@@ -59,9 +59,17 @@ public:
 
   void closedWriter(kj::StringPtr writerId);
 
+  kj::Promise<void> setBufferSize(SetBufferSizeContext context) override;
+
   kj::Promise<void> reader(ReaderContext context) override;
 
   kj::Promise<void> writer(WriterContext context) override;
+
+  kj::Promise<void> endpoints(EndpointsContext context) override;
+
+  kj::Promise<void> setAutoCloseSemantics(SetAutoCloseSemanticsContext context) override;
+
+  kj::Promise<void> close(CloseContext context) override;
 
   AnyPointerChannel::Client getClient();
   void setClient(AnyPointerChannel::Client c);
