@@ -74,6 +74,8 @@ public:
   AnyPointerChannel::Client getClient();
   void setClient(AnyPointerChannel::Client c);
 
+  bool canBeClosed() const;
+
   //mas::schema::common::Action::Client getUnregisterAction();
   //void setUnregisterAction(mas::schema::common::Action::Client unreg);
 
