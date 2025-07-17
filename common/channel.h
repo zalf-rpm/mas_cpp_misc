@@ -95,6 +95,10 @@ public:
 
   ~Reader() = default;
 
+  kj::Promise<void> info(InfoContext context) override;
+
+  kj::Promise<void> save(SaveContext context) override;
+
   kj::Promise<void> read(ReadContext context) override;
 
   kj::Promise<void> readIfMsg(ReadIfMsgContext context) override;
@@ -114,6 +118,10 @@ public:
   explicit Writer(Channel& c);
 
   ~Writer() = default;
+
+  kj::Promise<void> info(InfoContext context) override;
+
+  kj::Promise<void> save(SaveContext context) override;
 
   kj::Promise<void> write(WriteContext context) override;
 

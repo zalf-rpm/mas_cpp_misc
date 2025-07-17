@@ -210,6 +210,29 @@ void Channel::setRestorer(mas::infrastructure::common::Restorer *restorer) {
 Reader::Reader(Channel &c)
     : _channel(c), _id(kj::str(sole::uuid4().str())) {}
 
+kj::Promise<void> Reader::info(InfoContext context) {
+  KJ_LOG(INFO, "Reader::info: message received");
+  auto rs = context.getResults();
+  auto channelNameOrId = kj::str(_channel.impl->name.size() > 0 ? _channel.impl->name : _channel.impl->id);
+  rs.setId(_id);
+  rs.setName(kj::str(channelNameOrId, "::", _id));
+  rs.setDescription(kj::str("Port (ID: ", _id, ") @ Channel '", _channel.impl->name,
+    "' (ID: ", _channel.impl->id, ")"));
+  return kj::READY_NOW;
+}
+
+
+kj::Promise<void> Reader::save(SaveContext context) {
+  KJ_LOG(INFO, "Reader::save: message received");
+  if (_channel.impl->restorer) {
+    KJ_IF_MAYBE(client, _channel.impl->readers.find(_id)) {
+      return _channel.impl->restorer->save(*client, context.getResults().initSturdyRef(),
+                                context.getResults().initUnsaveSR());
+    }
+  }
+  return kj::READY_NOW;
+}
+
 kj::Promise<void> Reader::read(ReadContext context) {
   KJ_REQUIRE(!_closed, "Reader already closed.", _closed);
 
@@ -334,6 +357,29 @@ kj::Promise<void> Reader::close(CloseContext context) {
 
 Writer::Writer(Channel &c)
     : _channel(c), _id(kj::str(sole::uuid4().str())) {}
+
+kj::Promise<void> Writer::info(InfoContext context) {
+  KJ_LOG(INFO, "Writer::info: message received");
+  auto rs = context.getResults();
+  auto channelNameOrId = kj::str(_channel.impl->name.size() > 0 ? _channel.impl->name : _channel.impl->id);
+  rs.setId(_id);
+  rs.setName(kj::str(channelNameOrId, "::", _id));
+  rs.setDescription(kj::str("Port (ID: ", _id, ") @ Channel '", _channel.impl->name,
+    "' (ID: ", _channel.impl->id, ")"));
+  return kj::READY_NOW;
+}
+
+
+kj::Promise<void> Writer::save(SaveContext context) {
+  KJ_LOG(INFO, "Writer::save: message received");
+  if (_channel.impl->restorer) {
+    KJ_IF_MAYBE(client, _channel.impl->writers.find(_id)) {
+      return _channel.impl->restorer->save(*client, context.getResults().initSturdyRef(),
+                                context.getResults().initUnsaveSR());
+    }
+  }
+  return kj::READY_NOW;
+}
 
 kj::Promise<void> Writer::write(WriteContext context) {
   KJ_REQUIRE(!_closed, "Writer already closed.", _closed);
