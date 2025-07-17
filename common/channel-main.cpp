@@ -139,8 +139,11 @@ public:
           p.setFst(startupInfoWriterSRId);
           auto info = p.initSnd();
           info.setBufferSize(bufferSize);
+          info.setChannel(channelClient);
           info.setChannelSR(channelSR);
+          info.initReaders(readerSrts.size());
           info.initReaderSRs(readerSrts.size());
+          info.initWriters(writerSrts.size());
           info.initWriterSRs(writerSrts.size());
           startupInfo = info;
         }
@@ -153,6 +156,7 @@ public:
         auto readerSR = restorer->saveStr(reader, srt, nullptr, false, nullptr, false).wait(ioContext.waitScope).sturdyRef;
         if(outputSturdyRefs && channelSR.size() > 0) std::cout << "\treaderSR=" << readerSR.cStr() << std::endl;
         KJ_IF_MAYBE(info, startupInfo){
+          info->getReaders().set(k, kj::mv(reader));
           info->getReaderSRs().set(k, readerSR);
         }
       }
@@ -163,6 +167,7 @@ public:
         auto writerSR = restorer->saveStr(writer, srt, nullptr, false, nullptr, false).wait(ioContext.waitScope).sturdyRef;
         if(outputSturdyRefs && writerSR.size() > 0) std::cout << "\twriterSR=" << writerSR.cStr() << std::endl;
         KJ_IF_MAYBE(info, startupInfo){
+          info->getWriters().set(k, kj::mv(writer));
           info->getWriterSRs().set(k, writerSR);
         }
       }
