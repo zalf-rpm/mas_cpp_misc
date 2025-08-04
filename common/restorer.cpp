@@ -488,50 +488,54 @@ kj::Promise<void> Restorer::save(capnp::Capability::Client cap,
                                  kj::StringPtr sealForOwnerGuid,
                                  bool createUnsave,
                                  kj::StringPtr restoreToken) {
-
   int promisesCount = impl->isStoreSet ? (createUnsave ? 2 : 1) : 0;
   auto storePromises = kj::heapArrayBuilder<kj::Promise<bool>>(promisesCount);
-
   auto srToken = fixedSRToken == nullptr ? kj::str(sole::uuid4().str()) : kj::str(fixedSRToken);
-  auto &srEntry = impl->issuedSRTokens.insert(kj::str(srToken), {
-    kj::str(sealForOwnerGuid),
-    kj::mv(cap),
-    true,
-    kj::str(restoreToken)
-  });
-  // store sturdy ref data for later restoral 
-  if(impl->isStoreSet && restoreToken != nullptr){
-    auto srdJson = srEntry.value.toJson();
-    KJ_DBG(srToken, srdJson);
-    auto req = impl->store.getEntryRequest();
-    req.setKey(srToken);
-    auto svReq = req.send().getEntry().setValueRequest();
-    svReq.initValue().setTextValue(srdJson);
-    storePromises.add(svReq.send().then([](auto resp){ 
-      return resp.getSuccess();
-    }));
+  try {
+    auto& srEntry = impl->issuedSRTokens.insert(kj::str(srToken), {
+                                                  kj::str(sealForOwnerGuid),
+                                                  kj::mv(cap),
+                                                  true,
+                                                  kj::str(restoreToken)
+                                                });
+    // store sturdy ref data for later restoral
+    if (impl->isStoreSet && restoreToken != nullptr) {
+      auto srdJson = srEntry.value.toJson();
+      KJ_DBG(srToken, srdJson);
+      auto req = impl->store.getEntryRequest();
+      req.setKey(srToken);
+      auto svReq = req.send().getEntry().setValueRequest();
+      svReq.initValue().setTextValue(srdJson);
+      storePromises.add(svReq.send().then([](auto resp) {
+        return resp.getSuccess();
+      }));
+    }
+  } catch (const kj::Exception& e) {
+    // catch because user can supply a fixed sturdy ref token
+    kj::throwRecoverableException(KJ_EXCEPTION(FAILED, srToken, "already used"));
   }
-
   if(createUnsave) {
     auto unsaveSRToken = kj::str(sole::uuid4().str());
     auto srt = kj::str(srToken);
     auto usrt = kj::str(unsaveSRToken);
-    auto unsaveAction = kj::heap<Impl::ReleaseSturdyRef>(
-        [this, KJ_MVCAP(srt), KJ_MVCAP(usrt)]() {
-      auto usrt2 = kj::str(usrt);
-      return impl->unsave(srt).then([this, KJ_MVCAP(usrt2)](auto &&success){
-        return impl->unsave(usrt2).then([success](auto &&success2) { return success && success2; });
+    auto unsaveAction =
+      kj::heap<Impl::ReleaseSturdyRef>([this, KJ_MVCAP(srt), KJ_MVCAP(usrt)]() {
+        auto usrt2 = kj::str(usrt);
+        return impl->unsave(srt).then([this, KJ_MVCAP(usrt2)](auto&& success) {
+          return impl->unsave(usrt2).then([success](auto&& success2) {
+            return success && success2;
+          });
+        });
       });
-    }); 
     // for storing the unsave data, the restoreToken is actually the srToken, because we 
     // create the unsaveAction ourselves for the capability behind the srToken
-    auto &usrEntry = impl->issuedSRTokens.insert(kj::str(unsaveSRToken), {
-        kj::str(sealForOwnerGuid),
-        kj::mv(unsaveAction),
-        true,
-        kj::str(srToken),
-        kj::str(unsaveSRToken)
-    });
+    auto& usrEntry = impl->issuedSRTokens.insert(kj::str(unsaveSRToken), {
+                                                   kj::str(sealForOwnerGuid),
+                                                   kj::mv(unsaveAction),
+                                                   true,
+                                                   kj::str(srToken),
+                                                   kj::str(unsaveSRToken)
+                                                 });
     sturdyRef(unsaveSRBuilder, unsaveSRToken);
 
     if(impl->isStoreSet && restoreToken != nullptr){
@@ -553,22 +557,26 @@ kj::Promise<void> Restorer::save(capnp::Capability::Client cap,
 }
 
 kj::Promise<Restorer::SaveStrResult>
-Restorer::saveStr(capnp::Capability::Client cap, kj::StringPtr fixedSRToken,
-                  kj::StringPtr sealForOwnerGuid, bool createUnsave,
-                  kj::StringPtr restoreToken, bool storeSturdyRefs) {
+Restorer::saveStr(capnp::Capability::Client cap,
+                  kj::StringPtr fixedSRToken,
+                  kj::StringPtr sealForOwnerGuid,
+                  bool createUnsave,
+                  kj::StringPtr restoreToken,
+                  bool storeSturdyRefs) {
   int promisesCount = impl->isStoreSet && storeSturdyRefs ? (createUnsave ? 2 : 1) : 0;
   auto storePromises = kj::heapArrayBuilder<kj::Promise<bool>>(promisesCount);
   auto srToken = fixedSRToken == nullptr ? kj::str(sole::uuid4().str()) : kj::str(fixedSRToken);
   try {
-    auto &srEntry = impl->issuedSRTokens.insert(kj::str(srToken), {
-        kj::str(sealForOwnerGuid),
-        kj::mv(cap),
-        true,
-        kj::str(restoreToken)
-    });
+    auto& srEntry = impl->issuedSRTokens.insert(kj::str(srToken), {
+                                                  kj::str(sealForOwnerGuid),
+                                                  kj::mv(cap),
+                                                  true,
+                                                  kj::str(restoreToken)
+                                                });
     // store sturdy ref data for later restoral
     if (impl->isStoreSet && storeSturdyRefs) {
       auto srdJson = srEntry.value.toJson();
+      KJ_DBG(srToken, srdJson);
       auto req = impl->store.getEntryRequest();
       req.setKey(srToken);
       auto svReq = req.send().getEntry().setValueRequest();
@@ -577,7 +585,7 @@ Restorer::saveStr(capnp::Capability::Client cap, kj::StringPtr fixedSRToken,
         return resp.getSuccess();
       }));
     }
-  } catch(const kj::Exception& e) {
+  } catch (const kj::Exception& e) {
     // catch because user can supply a fixed sturdy ref token
     kj::throwRecoverableException(KJ_EXCEPTION(FAILED, srToken, "already used")); 
   }
@@ -587,23 +595,27 @@ Restorer::saveStr(capnp::Capability::Client cap, kj::StringPtr fixedSRToken,
     unsaveSRToken = kj::str(sole::uuid4().str());
     auto srt = kj::str(srToken);
     auto usrt = kj::str(unsaveSRToken);
-    auto unsaveAction = kj::heap<Impl::ReleaseSturdyRef>([this, KJ_MVCAP(srt), KJ_MVCAP(usrt)]() {
-      auto usrt2 = kj::str(usrt);
-      return impl->unsave(srt).then([this, KJ_MVCAP(usrt2)](auto success){
-        return impl->unsave(usrt2).then([success](auto success2){ return success && success2; });
+    auto unsaveAction =
+      kj::heap<Impl::ReleaseSturdyRef>([this, KJ_MVCAP(srt), KJ_MVCAP(usrt)]() {
+        auto usrt2 = kj::str(usrt);
+        return impl->unsave(srt).then([this, KJ_MVCAP(usrt2)](auto success) {
+          return impl->unsave(usrt2).then([success](auto success2) {
+            return success && success2;
+          });
+        });
       });
-    });
-    auto &usrEntry = impl->issuedSRTokens.insert(kj::str(unsaveSRToken), {
-        kj::str(sealForOwnerGuid),
-        kj::mv(unsaveAction),
-        true,
-        kj::str(srToken),
-        kj::str(unsaveSRToken)
-    });
+    auto& usrEntry = impl->issuedSRTokens.insert(kj::str(unsaveSRToken), {
+                                                   kj::str(sealForOwnerGuid),
+                                                   kj::mv(unsaveAction),
+                                                   true,
+                                                   kj::str(srToken),
+                                                   kj::str(unsaveSRToken)
+                                                 });
     unsaveSRStr = sturdyRefStr(unsaveSRToken);
 
     if(impl->isStoreSet && storeSturdyRefs){
       auto srdJson = usrEntry.value.toJson();
+      KJ_DBG(unsaveSRToken, srdJson);
       auto req = impl->store.getEntryRequest();
       req.setKey(unsaveSRToken);
       auto svReq = req.send().getEntry().setValueRequest();

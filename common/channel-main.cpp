@@ -51,6 +51,12 @@ public:
     return true;
   }
 
+  kj::MainBuilder::Validity setExitTimeout(kj::StringPtr timeoutInSeconds) {
+    exitTimeout = std::max(1, std::stoi(timeoutInSeconds.cStr()));
+    return true;
+  }
+
+
   kj::MainBuilder::Validity setNoOfReaderWriterPairs(kj::StringPtr no) {
     noOfReadersPerChannel = noOfWritersPerChannel = static_cast<uint8_t>(std::max(1UL, std::min(std::stoul(no.cStr()), 255UL)));
     return true;
@@ -133,8 +139,11 @@ public:
           p.setFst(startupInfoWriterSRId);
           auto info = p.initSnd();
           info.setBufferSize(bufferSize);
+          info.setChannel(channelClient);
           info.setChannelSR(channelSR);
+          info.initReaders(readerSrts.size());
           info.initReaderSRs(readerSrts.size());
+          info.initWriters(writerSrts.size());
           info.initWriterSRs(writerSrts.size());
           startupInfo = info;
         }
@@ -147,6 +156,7 @@ public:
         auto readerSR = restorer->saveStr(reader, srt, nullptr, false, nullptr, false).wait(ioContext.waitScope).sturdyRef;
         if(outputSturdyRefs && channelSR.size() > 0) std::cout << "\treaderSR=" << readerSR.cStr() << std::endl;
         KJ_IF_MAYBE(info, startupInfo){
+          info->getReaders().set(k, kj::mv(reader));
           info->getReaderSRs().set(k, readerSR);
         }
       }
@@ -157,6 +167,7 @@ public:
         auto writerSR = restorer->saveStr(writer, srt, nullptr, false, nullptr, false).wait(ioContext.waitScope).sturdyRef;
         if(outputSturdyRefs && writerSR.size() > 0) std::cout << "\twriterSR=" << writerSR.cStr() << std::endl;
         KJ_IF_MAYBE(info, startupInfo){
+          info->getWriters().set(k, kj::mv(writer));
           info->getWriterSRs().set(k, writerSR);
         }
       }
@@ -165,12 +176,22 @@ public:
         req->send().wait(ioContext.waitScope);
       }
 
-      channels.add(kj::tuple(kj::mv(channelClient), channel));
+      auto cd = kj::heap<ChannelData>(kj::mv(channelClient), channel);
+      allChannelData.add(kj::mv(cd));
+      channels.add(*allChannelData.back());
     }
 
     // Run forever, accepting connections and handling requests.
-    kj::NEVER_DONE.wait(ioContext.waitScope);
-    KJ_LOG(INFO, "stopped channel");
+    kj::Timer& timer = ioContext.provider->getTimer();
+    while (true) {
+      timer.afterDelay(exitTimeout * kj::SECONDS).wait(ioContext.waitScope);
+      if (channels.empty()) break;
+      for (auto& cd : channels) {
+        if (cd.channel->canBeClosed()) channels.remove(cd);
+      }
+
+    }
+    KJ_LOG(INFO, "stopped channels vat");
     return true;
   }
 
@@ -179,8 +200,8 @@ public:
     return addRestorableServiceOptions()
       .addOptionWithArg({'#', "no_of_channels"}, KJ_BIND_METHOD(*this, setNoOfChannels),
                         "<no_of_channels=1>", "Set the number of channels to start.")
-      .addOptionWithArg({'b', "buffer-size"}, KJ_BIND_METHOD(*this, setBufferSize),
-                        "<buffer-size=1>", "Set buffer size of channel.")
+      .addOptionWithArg({'b', "buffer_size"}, KJ_BIND_METHOD(*this, setBufferSize),
+                        "<buffer_size=1>", "Set buffer size of channel.")
       .addOptionWithArg({'c', "create"}, KJ_BIND_METHOD(*this, setNoOfReaderWriterPairs),
                         "<number_of_reader_writer_pairs (default: 1)>",
                         "Create number of reader/writer pairs per channel.")
@@ -196,16 +217,27 @@ public:
       .addOptionWithArg({'w', "writer_srts"}, KJ_BIND_METHOD(*this, setWriterSrts),
                         "<Sturdy_ref_token_1_Channel_1,[Sturdy_ref_token_2_Channel_1],...+Sturdy_ref_token_1_Channel_2,[Sturdy_ref_token_2_Channel_2],...>",
                         "Create writers for given sturdy ref tokens per channel.")
+    .addOptionWithArg({'t', "exit_timeout"}, KJ_BIND_METHOD(*this, setExitTimeout),
+                        "<exit_timeout=3>", "Exit channel vat after 'exit_timeout' (must be >= 1) seconds after last channel closed.")
       .callAfterParsing(KJ_BIND_METHOD(*this, startChannel))
       .build();
   }
 
 private:
   uint64_t bufferSize{1};
+  uint64_t exitTimeout{3};
   uint64_t noOfChannels{1};
   uint8_t noOfReadersPerChannel{1};
   uint8_t noOfWritersPerChannel{1};
-  kj::Vector<kj::Tuple<AnyPointerChannel::Client, Channel*>> channels;
+  struct ChannelData {
+    AnyPointerChannel::Client client{nullptr};
+    Channel* channel;
+    kj::ListLink<ChannelData> link;
+    ChannelData(AnyPointerChannel::Client client, Channel* channel)
+    : client(kj::mv(client)), channel(channel) {}
+  };
+  kj::List<ChannelData, &ChannelData::link> channels;
+  kj::Vector<kj::Own<ChannelData>> allChannelData;
   kj::Vector<kj::Vector<kj::String>> readerSrts;
   kj::Vector<kj::Vector<kj::String>> writerSrts;
 };

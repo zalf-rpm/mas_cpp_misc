@@ -50,6 +50,8 @@ struct Channel::Impl {
   bool sendCloseOnEmptyBuffer{false};
   AnyPointerChannel::Client client{nullptr};
   //mas::schema::common::Action::Client unregisterAction{nullptr};
+  bool channelShouldBeClosedOnEmptyBuffer = false;
+  bool channelCanBeClosed = false;
 
   Impl(Channel &self, mas::infrastructure::common::Restorer *restorer, kj::StringPtr name, kj::StringPtr description,
        uint64_t bufferSize)
@@ -70,6 +72,22 @@ struct Channel::Impl {
     }
   }
 
+  AnyPointerChannel::ChanReader::Client createReader() {
+    auto r = kj::heap<Reader>(self);
+    auto id = r->id();
+    AnyPointerChannel::ChanReader::Client rc = kj::mv(r);
+    readers.insert(kj::str(id), rc);
+    return rc;
+  }
+
+  AnyPointerChannel::ChanWriter::Client createWriter() {
+    auto w = kj::heap<Writer>(self);
+    auto id = w->id();
+    AnyPointerChannel::ChanWriter::Client wc = kj::mv(w);
+    writers.insert(kj::str(id), wc);
+    return wc;
+  }
+
 };
 
 Channel::Channel(kj::StringPtr name, kj::StringPtr description, uint64_t bufferSize, Restorer *restorer)
@@ -79,7 +97,7 @@ Channel::Channel(kj::StringPtr name, kj::StringPtr description, uint64_t bufferS
 Channel::~Channel() = default;
 
 kj::Promise<void> Channel::info(InfoContext context) {
-  KJ_LOG(INFO, "Channel::info: info message received");
+  KJ_LOG(INFO, "Channel::info: message received");
   auto rs = context.getResults();
   rs.setId(impl->id);
   rs.setName(impl->name);
@@ -89,7 +107,7 @@ kj::Promise<void> Channel::info(InfoContext context) {
 
 
 kj::Promise<void> Channel::save(SaveContext context) {
-  KJ_LOG(INFO, "Channel::save: save message received");
+  KJ_LOG(INFO, "Channel::save: message received");
   if (impl->restorer) {
     return impl->restorer->save(impl->client, context.getResults().initSturdyRef(),
                                 context.getResults().initUnsaveSR());
@@ -131,21 +149,49 @@ void Channel::closedWriter(kj::StringPtr writerId) {
   }
 }
 
+kj::Promise<void> Channel::setBufferSize(SetBufferSizeContext context) {
+  KJ_LOG(INFO, "Channel::setBufferSize: message received");
+  impl->bufferSize = context.getParams().getSize();
+  return kj::READY_NOW;
+}
+
 kj::Promise<void> Channel::reader(ReaderContext context) {
-  auto r = kj::heap<Reader>(*this);
-  auto id = r->id();
-  AnyPointerChannel::ChanReader::Client rc = kj::mv(r);
-  impl->readers.insert(kj::str(id), rc);
-  context.getResults().setR(rc);
+  KJ_LOG(INFO, "Channel::reader: message received");
+  context.getResults().setR(impl->createReader());
   return kj::READY_NOW;
 }
 
 kj::Promise<void> Channel::writer(WriterContext context) {
-  auto w = kj::heap<Writer>(*this);
-  auto id = w->id();
-  AnyPointerChannel::ChanWriter::Client wc = kj::mv(w);
-  impl->writers.insert(kj::str(id), wc);
-  context.getResults().setW(wc);
+  KJ_LOG(INFO, "Channel::writer: info message received");
+  context.getResults().setW(impl->createWriter());
+  return kj::READY_NOW;
+}
+
+kj::Promise<void> Channel::endpoints(EndpointsContext context) {
+  KJ_LOG(INFO, "Channel::endpoints: message received");
+  context.getResults().setR(impl->createReader());
+  context.getResults().setW(impl->createWriter());
+  return kj::READY_NOW;
+}
+
+kj::Promise<void> Channel::setAutoCloseSemantics(SetAutoCloseSemanticsContext context) {
+  KJ_LOG(INFO, "Channel::setAutoCloseSemantics: message received", context.getParams().getCs());
+  impl->autoCloseSemantics = context.getParams().getCs();
+  return kj::READY_NOW;
+}
+
+bool Channel::canBeClosed() const {
+  return impl->channelCanBeClosed;
+}
+
+kj::Promise<void> Channel::close(CloseContext context) {
+  KJ_LOG(INFO, "Channel::close: message received", context.getParams().getWaitForEmptyBuffer());
+  if (!context.getParams().getWaitForEmptyBuffer() || impl->buffer.empty()) {
+    impl->channelCanBeClosed = true;
+  } else {
+    impl->channelShouldBeClosedOnEmptyBuffer = true;
+    impl->sendCloseOnEmptyBuffer = true;
+  }
   return kj::READY_NOW;
 }
 
@@ -163,6 +209,29 @@ void Channel::setRestorer(mas::infrastructure::common::Restorer *restorer) {
 
 Reader::Reader(Channel &c)
     : _channel(c), _id(kj::str(sole::uuid4().str())) {}
+
+kj::Promise<void> Reader::info(InfoContext context) {
+  KJ_LOG(INFO, "Reader::info: message received");
+  auto rs = context.getResults();
+  auto channelNameOrId = kj::str(_channel.impl->name.size() > 0 ? _channel.impl->name : _channel.impl->id);
+  rs.setId(_id);
+  rs.setName(kj::str(channelNameOrId, "::", _id));
+  rs.setDescription(kj::str("Port (ID: ", _id, ") @ Channel '", _channel.impl->name,
+    "' (ID: ", _channel.impl->id, ")"));
+  return kj::READY_NOW;
+}
+
+
+kj::Promise<void> Reader::save(SaveContext context) {
+  KJ_LOG(INFO, "Reader::save: message received");
+  if (_channel.impl->restorer) {
+    KJ_IF_MAYBE(client, _channel.impl->readers.find(_id)) {
+      return _channel.impl->restorer->save(*client, context.getResults().initSturdyRef(),
+                                context.getResults().initUnsaveSR());
+    }
+  }
+  return kj::READY_NOW;
+}
 
 kj::Promise<void> Reader::read(ReadContext context) {
   KJ_REQUIRE(!_closed, "Reader already closed.", _closed);
@@ -185,7 +254,10 @@ kj::Promise<void> Reader::read(ReadContext context) {
       bwf->fulfill();
       c.impl->blockingWriteFulfillers.pop_back();
     }
-  } else {
+
+    //check if channel is supposed to be closed and just waiting for an empty buffer
+    if (b.empty() && c.impl->channelShouldBeClosedOnEmptyBuffer) c.impl->channelCanBeClosed = true;
+  } else if (!c.impl->channelCanBeClosed) { // don't read if channel is supposed to close
     // buffer is empty, but we are supposed to close down
     if (c.impl->sendCloseOnEmptyBuffer) {
       KJ_LOG(INFO, "Reader::read: buffer is empty, but close down");
@@ -250,7 +322,10 @@ kj::Promise<void> Reader::readIfMsg(ReadIfMsgContext context) {
       bwf->fulfill();
       c.impl->blockingWriteFulfillers.pop_back();
     }
-  } else {
+
+    //check if channel is supposed to be closed and just waiting for an empty buffer
+    if (b.empty() && c.impl->channelShouldBeClosedOnEmptyBuffer) c.impl->channelCanBeClosed = true;
+  } else if (!c.impl->channelCanBeClosed) { //don't read if channel is supposed to close
     // buffer is empty, but we are supposed to close down
     if (c.impl->sendCloseOnEmptyBuffer) {
       KJ_LOG(INFO, "Reader::readIfMsg: buffer is empty, but close down");
@@ -283,12 +358,38 @@ kj::Promise<void> Reader::close(CloseContext context) {
 Writer::Writer(Channel &c)
     : _channel(c), _id(kj::str(sole::uuid4().str())) {}
 
+kj::Promise<void> Writer::info(InfoContext context) {
+  KJ_LOG(INFO, "Writer::info: message received");
+  auto rs = context.getResults();
+  auto channelNameOrId = kj::str(_channel.impl->name.size() > 0 ? _channel.impl->name : _channel.impl->id);
+  rs.setId(_id);
+  rs.setName(kj::str(channelNameOrId, "::", _id));
+  rs.setDescription(kj::str("Port (ID: ", _id, ") @ Channel '", _channel.impl->name,
+    "' (ID: ", _channel.impl->id, ")"));
+  return kj::READY_NOW;
+}
+
+
+kj::Promise<void> Writer::save(SaveContext context) {
+  KJ_LOG(INFO, "Writer::save: message received");
+  if (_channel.impl->restorer) {
+    KJ_IF_MAYBE(client, _channel.impl->writers.find(_id)) {
+      return _channel.impl->restorer->save(*client, context.getResults().initSturdyRef(),
+                                context.getResults().initUnsaveSR());
+    }
+  }
+  return kj::READY_NOW;
+}
+
 kj::Promise<void> Writer::write(WriteContext context) {
   KJ_REQUIRE(!_closed, "Writer already closed.", _closed);
 
   auto v = context.getParams();
   auto &c = _channel;
   auto &b = c.impl->buffer;
+
+  //don't accept any further writes if channel is supposed to be closed (now or when buffer is empty)
+  if (c.impl->channelCanBeClosed || c.impl->channelShouldBeClosedOnEmptyBuffer) return kj::READY_NOW;
 
   // if we received a done, this writer can be removed
   if (v.isDone()) {
@@ -326,6 +427,9 @@ kj::Promise<void> Writer::writeIfSpace(WriteIfSpaceContext context) {
   auto v = context.getParams();
   auto &c = _channel;
   auto &b = c.impl->buffer;
+
+  //don't accept any further writes if channel is supposed to be closed (now or when buffer is empty)
+  if (c.impl->channelCanBeClosed || c.impl->channelShouldBeClosedOnEmptyBuffer) return kj::READY_NOW;
 
   // if we received a done, this writer can be removed
   if (v.isDone()) {

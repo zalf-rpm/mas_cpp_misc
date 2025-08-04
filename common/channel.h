@@ -59,12 +59,22 @@ public:
 
   void closedWriter(kj::StringPtr writerId);
 
+  kj::Promise<void> setBufferSize(SetBufferSizeContext context) override;
+
   kj::Promise<void> reader(ReaderContext context) override;
 
   kj::Promise<void> writer(WriterContext context) override;
 
+  kj::Promise<void> endpoints(EndpointsContext context) override;
+
+  kj::Promise<void> setAutoCloseSemantics(SetAutoCloseSemanticsContext context) override;
+
+  kj::Promise<void> close(CloseContext context) override;
+
   AnyPointerChannel::Client getClient();
   void setClient(AnyPointerChannel::Client c);
+
+  bool canBeClosed() const;
 
   //mas::schema::common::Action::Client getUnregisterAction();
   //void setUnregisterAction(mas::schema::common::Action::Client unreg);
@@ -85,6 +95,10 @@ public:
 
   ~Reader() = default;
 
+  kj::Promise<void> info(InfoContext context) override;
+
+  kj::Promise<void> save(SaveContext context) override;
+
   kj::Promise<void> read(ReadContext context) override;
 
   kj::Promise<void> readIfMsg(ReadIfMsgContext context) override;
@@ -104,6 +118,10 @@ public:
   explicit Writer(Channel& c);
 
   ~Writer() = default;
+
+  kj::Promise<void> info(InfoContext context) override;
+
+  kj::Promise<void> save(SaveContext context) override;
 
   kj::Promise<void> write(WriteContext context) override;
 
