@@ -576,7 +576,7 @@ Restorer::saveStr(capnp::Capability::Client cap,
     // store sturdy ref data for later restoral
     if (impl->isStoreSet && storeSturdyRefs) {
       auto srdJson = srEntry.value.toJson();
-      KJ_DBG(srToken, srdJson);
+      //KJ_DBG(srToken, srdJson);
       auto req = impl->store.getEntryRequest();
       req.setKey(srToken);
       auto svReq = req.send().getEntry().setValueRequest();

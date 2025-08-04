@@ -68,10 +68,10 @@ public:
     if(restorerContainerId.size() == 0 && restorerContainerSR.size() == 0){
       // get a new container
       auto req = storageServiceClient.newContainerRequest();
-      req.setName(kj::str("Storage services' restorer data (", name, ")"));
+      req.setName(kj::str("Data of restorer attached to storage services (", name, ")"));
       auto rcc = req.send().wait(ioContext.waitScope).getContainer();
       // get the id of the container
-      auto containerId = rcc.infoRequest().send().wait(ioContext.waitScope).getId();
+      auto containerId = kj::str(rcc.infoRequest().send().wait(ioContext.waitScope).getId());
       restorerContainerClient = rcc;
       //KJ_LOG(INFO, "Id of newly create container for restorer:", containerId);
       if(outputSturdyRefs && containerId.size() > 0) std::cout << "restorerContainerId=" << containerId.cStr() << std::endl;
@@ -90,7 +90,7 @@ public:
       req.setName(kj::str("Storage service data (", name, ")"));
       auto sccP = req.send().getContainer();
       // get the id of the container
-      auto containerId = sccP.infoRequest().send().wait(ioContext.waitScope).getId();
+      auto containerId = kj::str(sccP.infoRequest().send().wait(ioContext.waitScope).getId());
       serviceContainerClient = sccP;
       //KJ_LOG(INFO, "Id of newly create container for storage service:", containerId);
       if(outputSturdyRefs && containerId.size() > 0) std::cout << "serviceContainerId=" << containerId.cStr() << std::endl;
@@ -150,7 +150,7 @@ public:
     return addRestorableServiceOptions()
       .addOptionWithArg({'f', "filename"}, KJ_BIND_METHOD(*this, setPathToDB),
                         "<sqlite-db-filename (default: storage_service.sqlite)>", "Path to storage service' sqlite db.")
-      .addOptionWithArg({"storage_container_id"}, KJ_BIND_METHOD(*this, setRestorerContainerId),
+      .addOptionWithArg({"restorer_container_id"}, KJ_BIND_METHOD(*this, setRestorerContainerId),
                         "<sturdy_ref (default: not set = create new local container)>", "Sturdy ref to container for this restorer.")
       .addOptionWithArg({"service_container_id"}, KJ_BIND_METHOD(*this, setServiceContainerId),
                         "<sturdy_ref (default: not set = create new local container)>", "Sturdy ref to container for this service.")

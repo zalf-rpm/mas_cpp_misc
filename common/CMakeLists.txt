@@ -9,6 +9,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 set(MT_RUNTIME_LIB 1)
+add_compile_definitions(_USE_MATH_DEFINES)
 add_compile_definitions(NO_MYSQL)
 add_compile_definitions(SODIUM_STATIC)
 

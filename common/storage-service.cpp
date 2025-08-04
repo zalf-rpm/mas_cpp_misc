@@ -395,8 +395,6 @@ struct SqliteStorageService::Impl {
   
 };
 
-//-----------------------------------------------------------------------------
-
 struct Container::Impl {
   Container *self{nullptr};
   mas::infrastructure::common::Restorer *restorer{nullptr};
@@ -510,7 +508,7 @@ struct Container::Impl {
   }
 
 
-  void listEntries(capnp::List<mas::schema::storage::Store::Container::Entry, capnp::Kind::INTERFACE>::Builder list,
+  void listEntries(capnp::List<schema::storage::Store::Container::KeyAndEntry, capnp::Kind::STRUCT>::Builder  list,
     bool encodeAnyValueAsBase64Text = false,
     capnp::List<bool, capnp::Kind::PRIMITIVE>::Builder isAnyValue = nullptr) {
     auto selectStmt = kj::str("SELECT key FROM '", id, "' ORDER BY key");
@@ -527,11 +525,13 @@ struct Container::Impl {
         using C = mas::schema::storage::Store::Container::Entry::Client;
         // entry already cached?
         KJ_IF_MAYBE(entry, entries.find(kj::str(key))){
-          list.set(i, *entry);
+          list[i].setKey(key);
+          list[i].setEntry(*entry);
         } else { // no, create one
           C e = kj::heap<Entry>(self, key, false);
           entries.insert(kj::str(key), e);
-          list.set(i, e);
+          list[i].setKey(key);
+          list[i].setEntry(e);
         }
         i++;
       } 
@@ -586,8 +586,6 @@ struct Container::Impl {
 
 };
 
-// ----------------------------------------------------------------------
-
 struct Entry::Impl {
   Container::Impl *cImpl{nullptr};
   kj::String key;
@@ -627,9 +625,6 @@ struct Entry::Impl {
 
 
 };
-
-
-// ----------------------------------------------------------------------
 
 SqliteStorageService::SqliteStorageService(kj::StringPtr filename, kj::StringPtr name, 
   kj::StringPtr description, mas::infrastructure::common::Restorer* restorer)
@@ -682,7 +677,10 @@ kj::Promise<void> SqliteStorageService::listContainers(ListContainersContext con
   auto list = rs.initContainers((capnp::uint)containers.size());
   capnp::uint i = 0;
   for(auto& entry : impl->containers) {
-    list.set(i++, kj::get<0>(entry.value));
+    list[i].setId(entry.key);
+    list[i].setName(kj::get<1>(entry.value)->impl->name);
+    list[i].setContainer(kj::get<0>(entry.value));
+    i++;
   }
   return kj::READY_NOW;
 }
@@ -722,8 +720,6 @@ void SqliteStorageService::setRestorer(mas::infrastructure::common::Restorer* re
   impl->setRestorer(restorer);
 }
 
-// ----------------------------------------------------------------------
-
 Container::Container(SqliteStorageService& store, kj::StringPtr id, kj::StringPtr name, kj::StringPtr description)
 : impl(kj::heap<Impl>(this, store.impl->restorer, store.impl->db, id, name, description)) {
 }
@@ -736,7 +732,6 @@ kj::Promise<void> Container::info(InfoContext context) {
   rs.setDescription(impl->description);
   return kj::READY_NOW;
 }
-
 
 kj::Promise<void> Container::save(SaveContext context) {
   KJ_LOG(INFO, "save message received");
