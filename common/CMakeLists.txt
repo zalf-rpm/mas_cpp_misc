@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.12)
-project(Mas-infrastructure-common)
+project(mas_cpp_misc_common)
 
-message(STATUS "-> Mas-infrastructure-common")
+message(STATUS "-> mas_cpp_misc_common")
 
 # https://cmake.org/cmake/help/latest/prop_tgt/CXX_STANDARD.html
 set(CMAKE_CXX_STANDARD 17)
@@ -185,4 +185,4 @@ endif()
 #------------------------------------------------------------------------------
 
 
-message(STATUS "<- Mas-infrastructure-common")
+message(STATUS "<- mas_cpp_misc_common")
