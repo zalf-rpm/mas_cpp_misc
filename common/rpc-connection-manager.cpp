@@ -29,6 +29,7 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <netdb.h>  // Add this for gethostbyname/getaddrinfo
 
 #define CLOSE_SOCKET(s) close(s)
 #define SOCKLEN_T socklen_t
@@ -331,38 +332,69 @@ kj::Promise<kj::uint> ConnectionManager::bind(capnp::Capability::Client mainInte
 
 kj::Tuple<bool, kj::String>
 mas::infrastructure::common::getLocalIP(kj::StringPtr connectToHost, kj::uint connectToPort) {
-  if (connectToHost == "") connectToHost = "dyn.google";//"8.8.8.8";
-  if (connectToPort == 0) connectToPort = 443;//53;
+  if (connectToHost == "") connectToHost = "dns.google";
+  if (connectToPort == 0) connectToPort = 443;
 
-  // taken from https://gist.github.com/listnukira/4045436
+#ifdef _WIN32
+  // Initialize Winsock on Windows
+  WSADATA wsaData;
+  if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+    return kj::tuple(false, kj::str("WSAStartup failed"));
+  }
+#endif
+
   char myIP[16];
-  unsigned int myPort;
   struct sockaddr_in server_addr, my_addr;
   int sockfd;
 
   // Connect to server
   if ((sockfd = (int) socket(AF_INET, SOCK_STREAM, 0)) < 0) {
+#ifdef _WIN32
+    WSACleanup();
+#endif
     return kj::tuple(false, kj::str("Can't open stream socket."));
   }
 
-  // Set server_addr
-  memset(&server_addr, 0, sizeof(server_addr));
-  server_addr.sin_family = AF_INET;
-  server_addr.sin_addr.s_addr = inet_addr(connectToHost.cStr());
-  server_addr.sin_port = htons(connectToPort);
+  // Resolve hostname/IP address using getaddrinfo
+  struct addrinfo hints = {}, *result;
+  hints.ai_family = AF_INET;
+  hints.ai_socktype = SOCK_STREAM;
+
+  const kj::String portStr = kj::str(connectToPort);
+  int status = getaddrinfo(connectToHost.cStr(), portStr.cStr(), &hints, &result);
+  if (status != 0) {
+    CLOSE_SOCKET(sockfd);
+#ifdef _WIN32
+    WSACleanup();
+    return kj::tuple(false, kj::str("Can't resolve address: ", connectToHost, " (WSA error: ", status, ")"));
+#else
+    return kj::tuple(false, kj::str("Can't resolve address: ", connectToHost, " (", gai_strerror(status), ")"));
+#endif
+  }
+
+  // Copy the resolved address
+  memcpy(&server_addr, result->ai_addr, result->ai_addrlen);
+  freeaddrinfo(result);
 
   // Connect to server
-  if (connect(sockfd, (struct sockaddr *) &server_addr, sizeof(server_addr)) < 0) {
+  if (connect(sockfd, reinterpret_cast<struct sockaddr*>(&server_addr), sizeof(server_addr)) < 0) {
     CLOSE_SOCKET(sockfd);
+#ifdef _WIN32
+    WSACleanup();
+#endif
     return kj::tuple(false, kj::str("Can't connect to server (", connectToHost, ":", connectToPort, ")"));
   }
 
   // Get my ip address and port
   memset(&my_addr, 0, sizeof(my_addr));
   SOCKLEN_T len = sizeof(my_addr);
-  getsockname(sockfd, (struct sockaddr *) &my_addr, &len);
+  getsockname(sockfd, reinterpret_cast<struct sockaddr*>(&my_addr), &len);
   inet_ntop(AF_INET, &my_addr.sin_addr, myIP, sizeof(myIP));
-  myPort = ntohs(my_addr.sin_port);
   CLOSE_SOCKET(sockfd);
+
+#ifdef _WIN32
+  WSACleanup();
+#endif
+  
   return kj::tuple(true, kj::str(myIP));
 }
