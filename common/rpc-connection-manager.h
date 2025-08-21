@@ -51,7 +51,6 @@ private:
 	kj::Own<Impl> impl;
 };
 
-kj::Tuple<bool, kj::String> getLocalIP(kj::StringPtr connectToHost = "8.8.8.8", kj::uint connectToPort = 53U);
-//kj::Tuple<bool, kj::String> getLocalIP(kj::StringPtr connectToHost = "dyn.google", kj::uint connectToPort = 443U);
+kj::Tuple<bool, kj::String> getLocalIP(kj::StringPtr connectToHost = "dns.google", kj::uint connectToPort = 443U);
 
 } // namespace mas::infrastructure::common
