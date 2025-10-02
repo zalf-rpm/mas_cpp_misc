@@ -87,6 +87,9 @@ class Restorer final : public mas::schema::persistence::Restorer::Server
 
   void setVatId(mas::schema::persistence::VatId::Builder vatIdBuilder) const;
 
+  bool verifyOtherPublicKeySignature(kj::ArrayPtr<const unsigned char> otherPublicKey,
+                                     kj::ArrayPtr<const unsigned char> signature) const;
+
 private:
   struct Impl;
   kj::Own<Impl> impl;

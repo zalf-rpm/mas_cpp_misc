@@ -60,7 +60,7 @@ public:
     auto registrarClient = resolver->createRegistrar();
     KJ_LOG(INFO, "created host-port-resolver registrar");
 
-    auto ssr = restorer->saveStr(registrarClient).wait(ioContext.waitScope);
+    const auto ssr = restorer->saveStr(registrarClient).wait(ioContext.waitScope);
     if(outputSturdyRefs) std::cout << "registrarSR=" << ssr.sturdyRef.cStr() << std::endl;
 
     // Run forever, using regularly cleaning mappings, accepting connections and handling requests.

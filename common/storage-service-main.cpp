@@ -74,7 +74,7 @@ public:
       auto containerId = kj::str(rcc.infoRequest().send().wait(ioContext.waitScope).getId());
       restorerContainerClient = rcc;
       //KJ_LOG(INFO, "Id of newly create container for restorer:", containerId);
-      if(outputSturdyRefs && containerId.size() > 0) std::cout << "restorerContainerId=" << containerId.cStr() << std::endl;
+      if(outputSturdyRefs && containerId.size() > 0) std::cout << "restorer_container_id=" << containerId.cStr() << std::endl;
     } else if(restorerContainerId.size() > 0) { // we got an container id for the local store, get container
       auto req = storageServiceClient.containerWithIdRequest();
       req.setId(restorerContainerId);
@@ -93,7 +93,7 @@ public:
       auto containerId = kj::str(sccP.infoRequest().send().wait(ioContext.waitScope).getId());
       serviceContainerClient = sccP;
       //KJ_LOG(INFO, "Id of newly create container for storage service:", containerId);
-      if(outputSturdyRefs && containerId.size() > 0) std::cout << "serviceContainerId=" << containerId.cStr() << std::endl;
+      if(outputSturdyRefs && containerId.size() > 0) std::cout << "service_container_id=" << containerId.cStr() << std::endl;
     } else if(serviceContainerId.size() > 0) { // we got an container id for the local store, get container
       auto req = storageServiceClient.containerWithIdRequest();
       req.setId(serviceContainerId);

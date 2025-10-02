@@ -23,7 +23,6 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include <kj/encoding.h>
 #include <kj/string.h>
 #include <kj/thread.h>
-#define KJ_MVCAP(var) var = kj::mv(var)
 
 #include <capnp/capability.h>
 #include <capnp/compat/json.h>
@@ -34,6 +33,8 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include "common.h"
 #include "../json11/json11.hpp"
 #include "sole.hpp"
+
+#define KJ_MVCAP(var) var = kj::mv(var)
 
 using namespace mas::infrastructure::common;
 
@@ -56,8 +57,10 @@ struct Restorer::Impl {
   kj::String host;
   uint16_t port{ 0 };
   uint64_t vatId[4]{ 0, 0, 0, 0 };
-  kj::Array<unsigned char> signPKArray;
-  kj::Array<unsigned char> signSKArray;
+  //kj::Array<unsigned char> signPKArray;
+  kj::FixedArray<unsigned char, crypto_sign_PUBLICKEYBYTES> signPKArray;
+  //kj::Array<unsigned char> signSKArray;
+  kj::FixedArray<unsigned char, crypto_sign_SECRETKEYBYTES> signSKArray;
 
   kj::Function<capnp::Capability::Client(kj::StringPtr)> restoreCallback;
   // a callback to the service this restorer is connected to, to restore a capability after a restart
@@ -114,11 +117,12 @@ struct Restorer::Impl {
       throw std::runtime_error("sodium_init failed");
     }
 
-    unsigned char signPK[crypto_sign_PUBLICKEYBYTES];
-    unsigned char signSK[crypto_sign_SECRETKEYBYTES];
-    crypto_sign_keypair(signPK, signSK);
-    signPKArray = toKJArray(signPK, crypto_sign_PUBLICKEYBYTES);
-    signSKArray = toKJArray(signSK, crypto_sign_SECRETKEYBYTES);
+    //unsigned char signPK[crypto_sign_PUBLICKEYBYTES];
+    //unsigned char signSK[crypto_sign_SECRETKEYBYTES];
+    //crypto_sign_keypair(signPK, signSK);
+    crypto_sign_keypair(signPKArray.begin(), signSKArray.begin());
+    //signPKArray = toKJArray(signPK, crypto_sign_PUBLICKEYBYTES);
+    //signSKArray = toKJArray(signSK, crypto_sign_SECRETKEYBYTES);
 
     setVatIdFromSignPK();
   }
@@ -127,17 +131,21 @@ struct Restorer::Impl {
 
   void setVatIdFromSignPK() {
     // the Curve25519 byte array is little endian
-    vatId[0] = byteArrayToUInt64(signPKArray.slice(0, 8));
-    vatId[1] = byteArrayToUInt64(signPKArray.slice(8, 16));
-    vatId[2] = byteArrayToUInt64(signPKArray.slice(16, 24));
-    vatId[3] = byteArrayToUInt64(signPKArray.slice(24, 32));
+    // vatId[0] = byteArrayToUInt64(signPKArray.slice(0, 8));
+    // vatId[1] = byteArrayToUInt64(signPKArray.slice(8, 16));
+    // vatId[2] = byteArrayToUInt64(signPKArray.slice(16, 24));
+    // vatId[3] = byteArrayToUInt64(signPKArray.slice(24, 32));
+    vatId[0] = byteArrayToUInt64(signPKArray);
+    vatId[1] = byteArrayToUInt64(kj::ArrayPtr<unsigned char>(signPKArray).slice(8, 16));
+    vatId[2] = byteArrayToUInt64(kj::ArrayPtr<unsigned char>(signPKArray).slice(16, 24));
+    vatId[3] = byteArrayToUInt64(kj::ArrayPtr<unsigned char>(signPKArray).slice(24, 32));
   }
 
   typedef enum _endian {little_endian, big_endian} EndianType;
   static EndianType checkCPUEndian()
   {
       unsigned short x = 0x0001;
-      unsigned char c = *(unsigned char *)(&x);
+      const unsigned char c = *reinterpret_cast<unsigned char*>(&x);
       EndianType CPUEndian;
       return c == 0x01 ? little_endian : big_endian;
   }
@@ -145,13 +153,13 @@ struct Restorer::Impl {
 
   static uint64_t byteArrayToUInt64(kj::ArrayPtr<unsigned char> bytes) {
     //constexpr bool littleEndian(std::endian::native == std::endian::little);
-    bool littleEndian = checkCPUEndian() == little_endian;
+    const bool littleEndian = checkCPUEndian() == little_endian;
     const int start = littleEndian ? 0 : 7;
     const int end = littleEndian ? 8 : -1;
     const int inc = littleEndian ? 1 : -1;
     uint64_t value = 0;
     for (int i = start; i != end; i += inc) {
-      value += (uint64_t)bytes[i] << (i * 8);
+      value += static_cast<uint64_t>(bytes[i]) << (i * 8);
     }
     return value;
   }
@@ -159,34 +167,40 @@ struct Restorer::Impl {
 
   static void byteArrayToUInt32(kj::ArrayPtr<unsigned char> bytes, uint32_t& value) {
     //constexpr bool littleEndian(std::endian::native == std::endian::little);
-    bool littleEndian = checkCPUEndian() == little_endian;
+    const bool littleEndian = checkCPUEndian() == little_endian;
     const int start = littleEndian ? 0 : 3;
     const int end = littleEndian ? 4 : -1;
     const int inc = littleEndian ? 1 : -1;
     value = 0;
     for (int i = start; i != end; i += inc) {
-      value += (uint32_t)bytes[i] << (i * 8);
+      value += static_cast<uint32_t>(bytes[i]) << (i * 8);
     }
   }
 
-
-  static kj::Array<unsigned char> toKJArray(unsigned char* data, size_t len)
+  static kj::Array<unsigned char> toKJArray(const unsigned char* data, const size_t len)
   {
+    KJ_ASSERT_NONNULL(data);
     auto arr = kj::heapArray<unsigned char>(len);
     for (size_t i = 0; i < len; i++) arr[i] = data[i];
     return kj::mv(arr);
   }
 
-
   template<typename T>
-  unsigned char* fromKJArray(kj::ArrayPtr<T> arr, unsigned char* data = nullptr)
+  void fromKJArray(kj::ArrayPtr<T> arr, unsigned char* data)
   {
+    KJ_ASSERT_NONNULL(data);
     auto len = kj::size(arr);
-    if (data == nullptr) data = new unsigned char[len];
-    for (int i = 0; i < len; i++) data[i] = arr[i];
-    return data;
+    for (auto i = 0; i < len; i++) data[i] = arr[i];
   }
 
+  template<typename T>
+  unsigned char* fromKJArray(kj::ArrayPtr<T> arr)
+  {
+    auto len = kj::size(arr);
+    unsigned char* data = new unsigned char[len];
+    fromKJArray(arr, data);
+    return data;
+  }
 
   kj::Promise<kj::Maybe<capnp::Capability::Client>> getCapFromSRToken(
     mas::schema::persistence::SturdyRef::Token::Reader srToken, kj::StringPtr ownerGuid = kj::StringPtr()) {
@@ -251,26 +265,26 @@ struct Restorer::Impl {
       // and we know about that owner
       KJ_IF_MAYBE(ownerSignPKArray, ownerGuidToSignPK.find(ownerGuid)) {
         // prepare owner public key
-        auto ownerSignPK = (unsigned char*)malloc(ownerSignPKArray->size()*sizeof(unsigned char));
+        const auto ownerSignPK = static_cast<unsigned char*>(malloc(ownerSignPKArray->size() * sizeof(unsigned char)));
         KJ_DEFER(free(ownerSignPK));
         fromKJArray<kj::byte>(*ownerSignPKArray, ownerSignPK);
 
         // decode owner signed sturdy ref token
         // because of signing assume the sr token has been encoded base64
-        auto charArr = srToken.getData().asChars();
-        auto srTokenArr = kj::decodeBase64(charArr);
-        auto signedSRToken = (unsigned char*)malloc(charArr.size() * sizeof(unsigned char));
+        const auto charArr = srToken.getData().asChars();
+        const auto srTokenArr = kj::decodeBase64(charArr);
+        const auto signedSRToken = static_cast<unsigned char*>(malloc(charArr.size() * sizeof(unsigned char)));
         KJ_DEFER(free(signedSRToken));
         fromKJArray<const kj::byte>(srTokenArr, signedSRToken);
 
         // verify owner signed sturdy ref token
-        auto unsignedSRToken = (unsigned char*)malloc(charArr.size() * sizeof(unsigned char) + 1);
+        auto unsignedSRToken = static_cast<unsigned char*>(malloc(charArr.size() * sizeof(unsigned char) + 1));
         KJ_DEFER(free(unsignedSRToken));
         unsigned long long unsignedSRTokenLen;
         if(crypto_sign_open(unsignedSRToken, &unsignedSRTokenLen, signedSRToken, charArr.size(),
                             ownerSignPK) == 0) {
           unsignedSRToken[unsignedSRTokenLen] = '\0';
-          kj::StringPtr unsignedSRTokenPtr((const char*)unsignedSRToken, unsignedSRTokenLen);
+          kj::StringPtr unsignedSRTokenPtr(reinterpret_cast<const char*>(unsignedSRToken), unsignedSRTokenLen);
           KJ_IF_MAYBE(srData, issuedSRTokens.find(unsignedSRTokenPtr)) {
             // check if the stored owner is the claimed owner
             if (srData->ownerGuid == ownerGuid) return getCap(srData);
@@ -295,14 +309,41 @@ struct Restorer::Impl {
     return nullptr;
   }
 
+  kj::CappedArray<unsigned char, crypto_sign_BYTES> signPublicKey() {
+    //std::vector<unsigned char> signature(crypto_sign_BYTES);
+    kj::CappedArray<unsigned char, crypto_sign_BYTES> signature;
+    unsigned long long signature_len;
+
+    auto vatIdBase64 = kj::encodeBase64Url(signPKArray);
+    crypto_sign_detached(signature.begin(),
+                         &signature_len,
+                         vatIdBase64.asBytes().begin(), // message = public key itself
+                         crypto_sign_PUBLICKEYBYTES, // message length
+                         signSKArray.begin() // signing key
+                        );
+
+    signature.setSize(signature_len);
+    return signature;
+  }
+
+  static bool verifyOtherPublicKeySignature(kj::ArrayPtr<const unsigned char> otherPublicKey,
+    kj::ArrayPtr<const unsigned char> signature) {
+    return crypto_sign_verify_detached(
+        signature.begin(),
+        otherPublicKey.begin(),    // message = public key
+        otherPublicKey.size(),     // message length
+        otherPublicKey.begin()     // verification key (same as message in this case)
+    ) == 0;
+  }
+
 
   kj::String signSRTokenByVatAndEncodeBase64(kj::StringPtr srToken) {
-    auto signSK = (unsigned char*)malloc(signSKArray.size() * sizeof(unsigned char));
+    const auto signSK = static_cast<unsigned char*>(malloc(signSKArray.size() * sizeof(unsigned char)));
     KJ_DEFER(free(signSK));
     fromKJArray<kj::byte>(signSKArray, signSK);
 
     unsigned long long signedSRTokenLen = srToken.size() + crypto_sign_BYTES;
-    auto signedSRToken = (unsigned char*)malloc(signedSRTokenLen * sizeof(unsigned char));
+    const auto signedSRToken = static_cast<unsigned char*>(malloc(signedSRTokenLen * sizeof(unsigned char)));
     KJ_DEFER(free(signedSRToken));
     
     crypto_sign(signedSRToken, &signedSRTokenLen, (unsigned char*)srToken.cStr(), srToken.size(), signSK);
@@ -391,9 +432,7 @@ kj::Promise<void> Restorer::initVatIdFromContainer() {
         return vatSignPKReq.send().then([](auto&& resp){ return resp.getSuccess(); });
       } else { // ok we got a sign public key
         auto bytes = resp.getValue().getUint8ListValue();
-        auto arr = kj::heapArray<unsigned char>(bytes.size());
-        for (capnp::uint i = 0; i < bytes.size(); i++) arr[i] = (unsigned char)bytes[i];
-        impl->signPKArray = kj::mv(arr);
+        for (capnp::uint i = 0; i < bytes.size(); i++) impl->signPKArray[i] = static_cast<unsigned char>(bytes[i]);
         return kj::Promise<bool>(true);
       } 
     }));
@@ -409,9 +448,7 @@ kj::Promise<void> Restorer::initVatIdFromContainer() {
         return vatSignSKReq.send().then([](auto&& resp){ return resp.getSuccess(); });
       } else { // ok we got a sign secret key
         auto bytes = resp.getValue().getUint8ListValue();
-        auto arr = kj::heapArray<unsigned char>(bytes.size());
-        for (capnp::uint i = 0; i < bytes.size(); i++) arr[i] = (unsigned char)bytes[i];
-        impl->signSKArray = kj::mv(arr);
+        for (capnp::uint i = 0; i < bytes.size(); i++) impl->signSKArray[i] = static_cast<unsigned char>(bytes[i]);
         return kj::Promise<bool>(true);
       } 
     }));
@@ -648,3 +685,7 @@ void Restorer::setVatId(mas::schema::persistence::VatId::Builder vidb) const {
   vidb.setPublicKey3(impl->vatId[3]);
 }
 
+bool Restorer::verifyOtherPublicKeySignature(const kj::ArrayPtr<const unsigned char> otherPublicKey,
+  const kj::ArrayPtr<const unsigned char> signature) const {
+  return impl->verifyOtherPublicKeySignature(otherPublicKey, signature);
+}

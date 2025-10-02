@@ -65,7 +65,7 @@ struct HostPortResolver::Impl {
       auto params = context.getParams();
       if (params.hasBase64VatId() && params.hasHost() && params.getPort() > 0) {
         return hprImpl.addAndStoreMapping(params.getBase64VatId(), params.getHost(),
-                                  params.getPort(), params.getAlias()
+                                  params.getPort(), params.getAlias(), params.getIdentityProof()
         ).then([this, context](bool success) mutable {
           auto params = context.getParams();
           auto res = context.getResults();
@@ -127,19 +127,26 @@ struct HostPortResolver::Impl {
 
     if (runOnce) return kj::joinPromises(proms.finish()).ignoreResult();
     else {
-      proms.add(timer.afterDelay(secsKeepAliveTimeout).then([](){ return false; }));
+      proms.add(timer.afterDelay(secsKeepAliveTimeout*3).then([](){ return false; }));
       return kj::joinPromises(proms.finish()).ignoreResult().then(
           [this]() { return garbageCollectMappings(); });
     }
   }
 
   void keepAlive(kj::StringPtr b64VatId, kj::StringPtr alias) {
-    KJ_IF_MAYBE(hp, id2HostPort.find(b64VatId)) kj::get<2>(*hp) = 1;
-    if (alias != nullptr && alias.size() > 0) KJ_IF_MAYBE(hp, id2HostPort.find(alias)) kj::get<2>(*hp) = 1;
+    KJ_IF_MAYBE(hp, id2HostPort.find(b64VatId)) {
+      kj::get<2>(*hp) = 1;
+    }
+    if (alias != nullptr && alias.size() > 0) {
+      KJ_IF_MAYBE(hp, id2HostPort.find(alias)) {
+        kj::get<2>(*hp) = 1;
+      }
+    }
   }
 
-  kj::Promise<bool> addAndStoreMapping(kj::StringPtr b64VatId, kj::StringPtr host, uint16_t port, kj::StringPtr alias) {
-    addMapping(b64VatId, host, port, alias);
+  kj::Promise<bool> addAndStoreMapping(kj::StringPtr b64VatId, kj::StringPtr host, uint16_t port, kj::StringPtr alias,
+    capnp::Data::Reader signature) {
+    if (!addOrUpdateMapping(b64VatId, host, port, alias, signature)) return {false};
     if (isContainerSet){
       auto req = containerClient.addEntryRequest();
       req.setKey(b64VatId);
@@ -159,10 +166,23 @@ struct HostPortResolver::Impl {
     return {true};
   }
 
-  void addMapping(kj::StringPtr b64VatId, kj::StringPtr host, uint16_t port, kj::StringPtr alias) {
-    auto updateFunc = [](auto &existingValue, auto &&newValue){ existingValue = kj::mv(newValue); };
+  bool addOrUpdateMapping(kj::StringPtr b64VatId, kj::StringPtr host, uint16_t port, kj::StringPtr alias,
+    capnp::Data::Reader signature) {
+    // if there is already a mapping
+    KJ_IF_MAYBE(e, id2HostPort.find(b64VatId)) {
+      // don't update the mapping if there is no signature
+      // or there is a signature, but the vat id has not been signed with the vat's private key
+      if (signature == nullptr ||
+        !restorerPtr->verifyOtherPublicKeySignature(kj::decodeBase64(b64VatId), signature)) {
+        return false;
+      }
+    }
+    auto updateFunc = [](auto &existingValue, auto &&newValue) { existingValue = kj::mv(newValue); };
     id2HostPort.upsert(kj::str(b64VatId), kj::tuple(kj::str(host), port, 1), updateFunc);
-    if (alias != nullptr) id2HostPort.upsert(kj::str(alias), kj::tuple(kj::str(host), port, 1), updateFunc);
+    if (alias != nullptr) {
+      id2HostPort.upsert(kj::str(alias), kj::tuple(kj::str(host), port, 1), updateFunc);
+    }
+    return true;
   }
 
   kj::Promise<bool> initMappingsFromContainer() {
@@ -173,7 +193,7 @@ struct HostPortResolver::Impl {
           auto fst = pair.getFst();
           capnp::AnyStruct::Reader val = pair.getSnd().getAnyValue();
           auto ps = val.as<mas::schema::persistence::HostPortResolver::Registrar::RegisterParams>();
-          addMapping(ps.getBase64VatId(), ps.getHost(), ps.getPort(), ps.getAlias());
+          addOrUpdateMapping(ps.getBase64VatId(), ps.getHost(), ps.getPort(), ps.getAlias(), nullptr);
         }
         return true;
       }, [](auto &&ex) {
