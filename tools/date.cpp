@@ -374,8 +374,8 @@ std::string Date::toIsoDateString(const std::string &wrapInto) const {
 std::string Date::toString(const std::string &separator,
                            bool skipYear) const {
   ostringstream s;
-  s << (day() < 10 ? "0" : "") << day()
-    << separator << (month() < 10 ? "0" : "") << month();
+  s << (day() < 10 ? "0" : "") << static_cast<int>(day())
+    << separator << (month() < 10 ? "0" : "") << static_cast<int>(month());
   if (!skipYear) {
     if (isRelativeDate()) {
       uint16_t deltaYears = year();// -_relativeBaseYear;
