@@ -21,7 +21,7 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include <kj/string.h>
 #include <kj/vector.h>
 
-#include "host-port-resolver.h"
+#include "gateway.h"
 #include "common.h"
 #include "restorable-service-main.h"
 #include "rpc-connection-manager.h"
@@ -35,8 +35,8 @@ class GatewayMain : public RestorableServiceMain
 {
 public:
   explicit GatewayMain(kj::ProcessContext &context)
-      : RestorableServiceMain(context, "Host-Port-Resolver v0.1",
-                              "Offers a service to resolves other services current host and port.") {}
+      : RestorableServiceMain(context, "Gateway v0.1",
+                              "Offers a Gateway for internal services to be accessed from outside world.") {}
 
 
   kj::MainBuilder::Validity setSecsKeepAliveTimeout(kj::StringPtr name) {
@@ -47,27 +47,20 @@ public:
   kj::MainBuilder::Validity startService() {
     KJ_LOG(INFO, "starting host-port-resolver service");
 
-    auto ownedResolver = kj::heap<HostPortResolver>(
+    auto ownedGateway = kj::heap<Gateway>(
         ioContext.provider->getTimer(), name, description, secsKeepAliveTimeout);
-    auto resolver = ownedResolver.get();
-    mas::schema::persistence::HostPortResolver::Client resolverClient = kj::mv(ownedResolver);
-    KJ_LOG(INFO, "created host-port-resolver");
+    auto gateway = ownedGateway.get();
+    mas::schema::persistence::Gateway::Client gatewayClient = kj::mv(ownedGateway);
+    KJ_LOG(INFO, "created gateway");
 
-    startRestorerSetup(resolverClient, true);
-    resolver->setRestorer(restorer, restorerClient);
-    KJ_IF_MAYBE(scc, serviceContainerClient) resolver->setStorageContainer(*scc);
-
-    auto registrarClient = resolver->createRegistrar();
-    KJ_LOG(INFO, "created host-port-resolver registrar");
-
-    auto ssr = restorer->saveStr(registrarClient).wait(ioContext.waitScope);
-    if(outputSturdyRefs) std::cout << "registrarSR=" << ssr.sturdyRef.cStr() << std::endl;
+    startRestorerSetup(gatewayClient, true);
+    gateway->setRestorer(restorer, restorerClient);
 
     // Run forever, using regularly cleaning mappings, accepting connections and handling requests.
-    auto gcmProm = resolver->garbageCollectMappings();
+    auto gcmProm = gateway->garbageCollectMappings();
     gcmProm.then([](){ return kj::NEVER_DONE; },
                  [](auto &&ex){ KJ_LOG(INFO, ex); return kj::NEVER_DONE; }).wait(ioContext.waitScope);
-    KJ_LOG(INFO, "stopped host-port-resolver service");
+    KJ_LOG(INFO, "stopped gateway service");
     return true;
   }
 

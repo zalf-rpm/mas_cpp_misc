@@ -58,13 +58,14 @@ class Restorer final : public mas::schema::persistence::Restorer::Server
 
   void sturdyRef(mas::schema::persistence::SturdyRef::Builder& srb, kj::StringPtr srToken) const;
 
-  kj::Promise<void> save(capnp::Capability::Client cap,
-                         mas::schema::persistence::SturdyRef::Builder sturdyRefBuilder,
-                         mas::schema::persistence::SturdyRef::Builder unsaveSRBuilder = nullptr,
-                         kj::StringPtr fixedSRToken = nullptr,
-                         kj::StringPtr sealForOwnerGuid = nullptr,
-                         bool createUnsave = true,
-                         kj::StringPtr restoreToken = nullptr);
+  kj::Promise<mas::schema::persistence::Persistent::ReleaseSturdyRef::Client> save(
+    capnp::Capability::Client cap,
+    mas::schema::persistence::SturdyRef::Builder sturdyRefBuilder,
+    mas::schema::persistence::SturdyRef::Builder unsaveSRBuilder = nullptr,
+    kj::StringPtr fixedSRToken = nullptr,
+    kj::StringPtr sealForOwnerGuid = nullptr,
+    bool createUnsave = true,
+    kj::StringPtr restoreToken = nullptr);
 
   struct SaveStrResult {
     kj::String sturdyRef;

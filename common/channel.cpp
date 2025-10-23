@@ -110,7 +110,7 @@ kj::Promise<void> Channel::save(SaveContext context) {
   KJ_LOG(INFO, "Channel::save: message received");
   if (impl->restorer) {
     return impl->restorer->save(impl->client, context.getResults().initSturdyRef(),
-                                context.getResults().initUnsaveSR());
+                                context.getResults().initUnsaveSR()).ignoreResult();
   }
   return kj::READY_NOW;
 }
@@ -227,7 +227,7 @@ kj::Promise<void> Reader::save(SaveContext context) {
   if (_channel.impl->restorer) {
     KJ_IF_MAYBE(client, _channel.impl->readers.find(_id)) {
       return _channel.impl->restorer->save(*client, context.getResults().initSturdyRef(),
-                                context.getResults().initUnsaveSR());
+                                context.getResults().initUnsaveSR()).ignoreResult();
     }
   }
   return kj::READY_NOW;
@@ -375,7 +375,7 @@ kj::Promise<void> Writer::save(SaveContext context) {
   if (_channel.impl->restorer) {
     KJ_IF_MAYBE(client, _channel.impl->writers.find(_id)) {
       return _channel.impl->restorer->save(*client, context.getResults().initSturdyRef(),
-                                context.getResults().initUnsaveSR());
+                                context.getResults().initUnsaveSR()).ignoreResult();
     }
   }
   return kj::READY_NOW;

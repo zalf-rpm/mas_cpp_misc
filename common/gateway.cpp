@@ -13,7 +13,7 @@ This file is part of the ZALF model and simulation infrastructure.
 Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 */
 
-#include "host-port-resolver.h"
+#include "gateway.h"
 
 #include <kj/async.h>
 #include <kj/common.h>
@@ -35,67 +35,37 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 
 using namespace mas::infrastructure::common;
 
-struct HostPortResolver::Impl {
+struct Gateway::Impl {
 
-  struct Heartbeat final : public mas::schema::persistence::HostPortResolver::Registrar::Heartbeat::Server {
-    kj::String base64VatId;
-    kj::String alias;
-    HostPortResolver::Impl &hprImpl;
+  struct Heartbeat final : public mas::schema::persistence::Heartbeat::Server {
+    kj::String capId;
+    Gateway::Impl &gwImpl;
 
-    Heartbeat(HostPortResolver::Impl &hprImpl, kj::StringPtr base64VatId, kj::StringPtr alias)
-        : hprImpl(hprImpl), base64VatId(kj::str(base64VatId)), alias(kj::str(alias)) {}
+    Heartbeat(Gateway::Impl &gwImpl, kj::StringPtr capId)
+        : gwImpl(gwImpl), capId(kj::str(capId)) {}
 
     virtual ~Heartbeat() = default;
 
     kj::Promise<void> beat(BeatContext context) override {
-      hprImpl.keepAlive(base64VatId, alias);
+      gwImpl.keepAlive(capId);
       return kj::READY_NOW;
     }
   };
 
-  struct Registrar final : public mas::schema::persistence::HostPortResolver::Registrar::Server {
-    HostPortResolver::Impl &hprImpl;
-    kj::Timer &timer;
-
-    Registrar(HostPortResolver::Impl &hprImpl, kj::Timer &timer) : hprImpl(hprImpl), timer(timer) {}
-    virtual ~Registrar() = default;
-
-    // register @0 (base64VatId :Text, host :Text, port :UInt16, alias :Text) -> (heartbeat :Capability, secsHeartbeatInterval :UInt32);
-    kj::Promise<void> register_(RegisterContext context) override {
-      auto params = context.getParams();
-      if (params.hasBase64VatId() && params.hasHost() && params.getPort() > 0) {
-        return hprImpl.addAndStoreMapping(params.getBase64VatId(), params.getHost(),
-                                  params.getPort(), params.getAlias()
-        ).then([this, context](bool success) mutable {
-          auto params = context.getParams();
-          auto res = context.getResults();
-          if (success) {
-            auto a = kj::heap<Heartbeat>(hprImpl, params.getBase64VatId(), params.getAlias());
-            res.setHeartbeat(kj::mv(a));
-            res.setSecsHeartbeatInterval(hprImpl.secsKeepAliveTimeout / kj::SECONDS);
-          }
-        });
-      }
-      return kj::READY_NOW;
-    }
-  };
-
-  HostPortResolver &self;
+  Gateway &self;
   Restorer* restorerPtr{nullptr};
   mas::schema::persistence::Restorer::Client restorerClient{nullptr};
-  mas::schema::storage::Store::Container::Client containerClient{nullptr};
-  bool isContainerSet{false};
   kj::Timer &timer;
   kj::String id;
-  kj::String name{kj::str("Host-Port-Resolver")};
+  kj::String name{kj::str("Gateway")};
   kj::String description;
   kj::Duration secsKeepAliveTimeout{10 * 60 * kj::SECONDS};
   uint16_t count{0};
 
-  kj::HashMap<kj::String, kj::Tuple<kj::String, uint16_t, uint8_t>> id2HostPort;
-  // the mapping from id to host and port (and keep alive count, which should never get 0)
+  kj::HashMap<kj::String, kj::Tuple<uint8_t, mas::schema::persistence::Persistent::ReleaseSturdyRef::Client>> id2CountAndUnsaveCap;
+  // the mapping from id to keep alive count (which should never get 0) and unsaveCap
 
-  Impl(HostPortResolver &self, kj::Timer& timer, kj::StringPtr name, kj::StringPtr description, uint32_t secsKeepAliveTimeout)
+  Impl(Gateway &self, kj::Timer& timer, kj::StringPtr name, kj::StringPtr description, uint32_t secsKeepAliveTimeout)
   : self(self)
   , timer(timer)
   , id(kj::str(sole::uuid4().str()))
@@ -108,94 +78,54 @@ struct HostPortResolver::Impl {
   kj::Promise<void> garbageCollectMappings(bool runOnce = false) {
     KJ_DBG("garbageCollectMappings", runOnce, count++);
     kj::Vector<kj::String> toBeGarbageCollectedKeys;
-    for (auto& entry : id2HostPort) {
-      auto aliveCount = kj::get<2>(entry.value);
+    for (auto& entry : id2CountAndUnsaveCap) {
+      auto aliveCount = kj::get<0>(entry.value);
       if (aliveCount == 0) toBeGarbageCollectedKeys.add(kj::str(entry.key));
-      else if(aliveCount > 0) kj::get<2>(entry.value) = aliveCount - 1;
+      else if(aliveCount > 0) kj::get<0>(entry.value) = aliveCount - 1;
     }
 
     auto proms = kj::heapArrayBuilder<kj::Promise<bool>>(
-        (isContainerSet ? toBeGarbageCollectedKeys.size() : 0) + (runOnce ? 0 : 1));
+      toBeGarbageCollectedKeys.size() + (runOnce ? 0 : 1));
     for(kj::StringPtr key : toBeGarbageCollectedKeys) {
-      if (isContainerSet){
-        auto req = containerClient.removeEntryRequest();
-        req.setKey(key);
-        proms.add(req.send().then([](auto &&resp){ return resp.getSuccess(); }));
+      KJ_IF_MAYBE(val, id2CountAndUnsaveCap.find(key)) {
+        auto unsaveCap = kj::get<1>(*val);
+        proms.add(unsaveCap.releaseRequest().send().then([](auto &&resp){ return resp.getSuccess(); }));
+        KJ_DBG("removed mapping", key);
       }
-      id2HostPort.erase(key);
+      id2CountAndUnsaveCap.erase(key);
     }
 
     if (runOnce) return kj::joinPromises(proms.finish()).ignoreResult();
-    else {
-      proms.add(timer.afterDelay(secsKeepAliveTimeout).then([](){ return false; }));
-      return kj::joinPromises(proms.finish()).ignoreResult().then(
-          [this]() { return garbageCollectMappings(); });
+    proms.add(timer.afterDelay(secsKeepAliveTimeout*3).then([](){ return false; }));
+    return kj::joinPromises(proms.finish()).ignoreResult().then(
+        [this]() { return garbageCollectMappings(); });
+  }
+
+  void keepAlive(kj::StringPtr capId) {
+    KJ_IF_MAYBE(hp, id2CountAndUnsaveCap.find(capId)) {
+      kj::get<0>(*hp) = 1;
     }
   }
 
-  void keepAlive(kj::StringPtr b64VatId, kj::StringPtr alias) {
-    KJ_IF_MAYBE(hp, id2HostPort.find(b64VatId)) kj::get<2>(*hp) = 1;
-    if (alias != nullptr && alias.size() > 0) KJ_IF_MAYBE(hp, id2HostPort.find(alias)) kj::get<2>(*hp) = 1;
-  }
-
-  kj::Promise<bool> addAndStoreMapping(kj::StringPtr b64VatId, kj::StringPtr host, uint16_t port, kj::StringPtr alias) {
-    addMapping(b64VatId, host, port, alias);
-    if (isContainerSet){
-      auto req = containerClient.addEntryRequest();
-      req.setKey(b64VatId);
-      req.setReplaceExisting(true);
-      auto rps = req.initValue().initAnyValueAs<mas::schema::persistence::HostPortResolver::Registrar::RegisterParams>();
-      rps.setBase64VatId(b64VatId);
-      rps.setHost(host);
-      rps.setPort(port);
-      if (alias != nullptr) rps.setAlias(alias);
-      return req.send().then(
-          [](auto &&resp) { return resp.getSuccess(); },
-          [](auto &&ex) {
-            KJ_LOG(INFO, "Couldn't add mapping to storage container.", ex);
-            return false;
-          });
-    }
-    return {true};
-  }
-
-  void addMapping(kj::StringPtr b64VatId, kj::StringPtr host, uint16_t port, kj::StringPtr alias) {
-    auto updateFunc = [](auto &existingValue, auto &&newValue){ existingValue = kj::mv(newValue); };
-    id2HostPort.upsert(kj::str(b64VatId), kj::tuple(kj::str(host), port, 1), updateFunc);
-    if (alias != nullptr) id2HostPort.upsert(kj::str(alias), kj::tuple(kj::str(host), port, 1), updateFunc);
-  }
-
-  kj::Promise<bool> initMappingsFromContainer() {
-    if (isContainerSet) {
-      auto req = containerClient.downloadEntriesRequest();
-      return req.send().then([this](auto &&resp) {
-        for(const auto pair : resp.getEntries()){
-          auto fst = pair.getFst();
-          capnp::AnyStruct::Reader val = pair.getSnd().getAnyValue();
-          auto ps = val.as<mas::schema::persistence::HostPortResolver::Registrar::RegisterParams>();
-          addMapping(ps.getBase64VatId(), ps.getHost(), ps.getPort(), ps.getAlias());
-        }
-        return true;
-      }, [](auto &&ex) {
-        KJ_LOG(ERROR, "Couldn't request list entries.", ex);
-        return false;
-      });
-    }
-    return {false};
-  }
-
-  mas::schema::persistence::HostPortResolver::Registrar::Client createRegistrar() {
-    return kj::heap<Registrar>(*this, timer);
+  kj::Promise<bool> addAndStoreMapping(
+    kj::StringPtr capId,
+    schema::persistence::Persistent::ReleaseSturdyRef::Client unsaveCap
+  ) {
+    auto updateFunc = [](auto &existingValue, auto &&newValue) { existingValue = kj::mv(newValue); };
+    //id2HostPort.upsert(kj::str(capId), kj::tuple(kj::str(host), port, 1), updateFunc);
+    id2CountAndUnsaveCap.upsert(kj::str(capId), kj::tuple(1, kj::mv(unsaveCap)), updateFunc);
+    KJ_DBG("added mapping", capId);
+    return true;
   }
 };
 
-HostPortResolver::HostPortResolver(kj::Timer& timer, kj::StringPtr name, kj::StringPtr description, uint32_t secsKeepAliveTimeout)
+Gateway::Gateway(kj::Timer& timer, kj::StringPtr name, kj::StringPtr description, uint32_t secsKeepAliveTimeout)
 : impl(kj::heap<Impl>(*this, timer, name, description, secsKeepAliveTimeout)) {
 }
 
-HostPortResolver::~HostPortResolver() = default;
+Gateway::~Gateway() = default;
 
-kj::Promise<void> HostPortResolver::info(InfoContext context) {
+kj::Promise<void> Gateway::info(InfoContext context) {
   KJ_LOG(INFO, "info message received");
   auto rs = context.getResults();
   rs.setId(impl->id);
@@ -204,7 +134,7 @@ kj::Promise<void> HostPortResolver::info(InfoContext context) {
   return kj::READY_NOW;
 }
 
-kj::Promise<void> HostPortResolver::restore(RestoreContext context) {
+kj::Promise<void> Gateway::restore(RestoreContext context) {
   auto req = impl->restorerClient.restoreRequest();
   auto params = context.getParams();
   req.setLocalRef(params.getLocalRef());
@@ -214,30 +144,36 @@ kj::Promise<void> HostPortResolver::restore(RestoreContext context) {
   });
 }
 
-kj::Promise<void> HostPortResolver::resolve(ResolveContext context) {
+kj::Promise<void> Gateway::register_(RegisterContext context) {
   auto params = context.getParams();
-  if (params.hasId()) {
-    KJ_IF_MAYBE(hp, impl->id2HostPort.find(params.getId())) {
-      auto res = context.getResults();
-      res.setHost(kj::get<0>(*hp));
-      res.setPort(kj::get<1>(*hp));
-    }
+  if (params.hasCap()) {
+    capnp::MallocMessageBuilder msg;
+    auto srb = context.getResults().initSturdyRef();
+    auto unsaveSrb = msg.initRoot<mas::schema::persistence::SturdyRef>();
+    return impl->restorerPtr->save(params.getCap(), srb, unsaveSrb).
+                 then(
+                      [this, context](auto &&unsaveCap) mutable {
+                        auto capId = kj::str(sole::uuid4().str());
+                        return impl->addAndStoreMapping(capId, unsaveCap).
+                                     then([this, context, KJ_MVCAP(capId)
+                                          ](bool success) mutable {
+                                            auto res = context.getResults();
+                                            if (success) {
+                                              auto hb = kj::heap<
+                                                Impl::Heartbeat>(*impl.get(), capId);
+                                              res.setHeartbeat(kj::mv(hb));
+                                              res.setSecsHeartbeatInterval(impl->secsKeepAliveTimeout /
+                                                                           kj::SECONDS);
+                                            }
+                                          });
+                      });
   }
   return kj::READY_NOW;
 }
 
-void HostPortResolver::setRestorer(Restorer *restorer, mas::schema::persistence::Restorer::Client client){
+void Gateway::setRestorer(Restorer *restorer, mas::schema::persistence::Restorer::Client client){
   impl->restorerPtr = restorer;
   impl->restorerClient = client;
 }
 
-void HostPortResolver::setStorageContainer(mas::schema::storage::Store::Container::Client client) {
-  impl->containerClient = client;
-  impl->isContainerSet = true;
-}
-
-mas::schema::persistence::HostPortResolver::Registrar::Client HostPortResolver::createRegistrar() {
-  return impl->createRegistrar();
-}
-
-kj::Promise<void> HostPortResolver::garbageCollectMappings(bool runOnce) { return impl->garbageCollectMappings(runOnce); }
+kj::Promise<void> Gateway::garbageCollectMappings(bool runOnce) { return impl->garbageCollectMappings(runOnce); }

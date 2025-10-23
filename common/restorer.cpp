@@ -518,7 +518,7 @@ kj::Tuple<bool, kj::String> Restorer::verifySRToken(kj::StringPtr srTokenBase64,
 }
 
 
-kj::Promise<void> Restorer::save(capnp::Capability::Client cap,
+kj::Promise<mas::schema::persistence::Persistent::ReleaseSturdyRef::Client> Restorer::save(capnp::Capability::Client cap,
                                  mas::schema::persistence::SturdyRef::Builder sturdyRefBuilder,
                                  mas::schema::persistence::SturdyRef::Builder unsaveSRBuilder,
                                  kj::StringPtr fixedSRToken,
@@ -551,6 +551,7 @@ kj::Promise<void> Restorer::save(capnp::Capability::Client cap,
     // catch because user can supply a fixed sturdy ref token
     kj::throwRecoverableException(KJ_EXCEPTION(FAILED, srToken, "already used"));
   }
+  mas::schema::persistence::Persistent::ReleaseSturdyRef::Client unsaveCap(nullptr);
   if(createUnsave) {
     auto unsaveSRToken = kj::str(sole::uuid4().str());
     auto srt = kj::str(srToken);
@@ -564,11 +565,12 @@ kj::Promise<void> Restorer::save(capnp::Capability::Client cap,
           });
         });
       });
+    unsaveCap = kj::mv(unsaveAction);
     // for storing the unsave data, the restoreToken is actually the srToken, because we 
     // create the unsaveAction ourselves for the capability behind the srToken
     auto& usrEntry = impl->issuedSRTokens.insert(kj::str(unsaveSRToken), {
                                                    kj::str(sealForOwnerGuid),
-                                                   kj::mv(unsaveAction),
+                                                   unsaveCap, //kj::mv(unsaveAction),
                                                    true,
                                                    kj::str(srToken),
                                                    kj::str(unsaveSRToken)
@@ -590,7 +592,8 @@ kj::Promise<void> Restorer::save(capnp::Capability::Client cap,
 
   sturdyRef(sturdyRefBuilder, srToken);
 
-  return kj::joinPromises(storePromises.finish()).ignoreResult();
+  return kj::joinPromises(storePromises.finish()).ignoreResult().then(
+    [KJ_MVCAP(unsaveCap)]() mutable { return unsaveCap; });
 }
 
 kj::Promise<Restorer::SaveStrResult>

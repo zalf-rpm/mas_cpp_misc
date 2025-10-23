@@ -184,5 +184,20 @@ endif()
 
 #------------------------------------------------------------------------------
 
+# create storage service
+add_executable(gateway-service
+        gateway.h
+        gateway.cpp
+        gateway-main.cpp
+)
+target_link_libraries(gateway-service
+        common_lib
+)
+#target_include_directories(storage-service PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+if (MSVC AND MT_RUNTIME_LIB)
+    target_compile_options(gateway-service PRIVATE "/MT$<$<CONFIG:Debug>:d>")
+endif()
+
+#------------------------------------------------------------------------------
 
 message(STATUS "<- mas_cpp_misc_common")
