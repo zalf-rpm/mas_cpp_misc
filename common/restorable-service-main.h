@@ -40,6 +40,8 @@ public:
   kj::MainBuilder::Validity setDescription(kj::StringPtr d);
   kj::MainBuilder::Validity setHost(kj::StringPtr name);
   kj::MainBuilder::Validity setLocalHost(kj::StringPtr h);
+  kj::MainBuilder::Validity setSrHost(kj::StringPtr h);
+  kj::MainBuilder::Validity setSrPort(kj::StringPtr name);
   kj::MainBuilder::Validity setPort(kj::StringPtr name);
   kj::MainBuilder::Validity setCheckPort(kj::StringPtr portStr);
   kj::MainBuilder::Validity setCheckIP(kj::StringPtr ip);
@@ -72,6 +74,8 @@ protected:
   kj::String description;
   kj::String host{kj::str("*")};
   kj::String localHost{kj::str("localhost")};
+  kj::String srHost;
+  int srPort{0};
   int port{0};
   kj::String checkIP;
   int checkPort{0};

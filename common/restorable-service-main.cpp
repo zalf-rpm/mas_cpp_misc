@@ -45,6 +45,10 @@ kj::MainBuilder::Validity RestorableServiceMain::setHost(kj::StringPtr name) { h
 
 kj::MainBuilder::Validity RestorableServiceMain::setLocalHost(kj::StringPtr h) { localHost = kj::str(h); return true; }
 
+kj::MainBuilder::Validity RestorableServiceMain::setSrHost(kj::StringPtr h) { srHost = kj::str(h); return true; }
+
+kj::MainBuilder::Validity RestorableServiceMain::setSrPort(kj::StringPtr name) { srPort = kj::max(0, name.parseAs<int>()); return true; }
+
 kj::MainBuilder::Validity RestorableServiceMain::setPort(kj::StringPtr name) { port = kj::max(0, name.parseAs<int>()); return true; }
 
 kj::MainBuilder::Validity RestorableServiceMain::setCheckPort(kj::StringPtr portStr) { checkPort = portStr.parseAs<int>(); return true; }
@@ -127,14 +131,19 @@ void RestorableServiceMain::startRestorerSetup(mas::schema::common::Identifiable
       ? serviceClient.castAs<capnp::Capability>() : restorerClient, host, port);
   auto succAndIP = infrastructure::common::getLocalIP(checkIP, checkPort);
   if(kj::get<0>(succAndIP)){
-    restorer->setHost(kj::get<1>(succAndIP));
-    conMan->setLocallyUsedHost(kj::get<1>(succAndIP));
+    if (srHost.size() == 0) {
+      restorer->setHost(kj::get<1>(succAndIP));
+      conMan->setLocallyUsedHost(kj::get<1>(succAndIP));
+    } else {
+      restorer->setHost(srHost);
+      conMan->setLocallyUsedHost(srHost);
+    }
   } else {
     restorer->setHost(localHost);
     conMan->setLocallyUsedHost(localHost);
   }
   auto port = portPromise.then([this](auto port){ 
-    return restorer->setPort(port).then([port](){ 
+    return restorer->setPort(srPort == 0 ? port : srPort).then([port](){
         return port; 
       }, [](auto&& e){
         KJ_LOG(ERROR, "Error while trying to set port.", e);
@@ -197,7 +206,11 @@ kj::MainBuilder& RestorableServiceMain::addRestorableServiceOptions()
     .addOptionWithArg({"reg_category"}, KJ_BIND_METHOD(*this, setRegCategory),
                       "<category (default: monica)>", "Name of the category to register at.")
     .addOptionWithArg({"local_host"}, KJ_BIND_METHOD(*this, setLocalHost),
-                      "<IP_or_host_address (default: localhost)>", "Use this host for sturdy reference creation.")
+                      "<IP_or_host_address (default: localhost)>", "Use this host for sturdy reference creation if no connection to outside possible.")
+    .addOptionWithArg({"sr_host"}, KJ_BIND_METHOD(*this, setSrHost),
+                      "<IP_or_host_address (default: outside-visible local IP)>", "Use this host for sturdy reference creation.")
+    .addOptionWithArg({ "sr_port"}, KJ_BIND_METHOD(*this, setSrPort),
+                      "<port (default: automatic or defined port)>", "Use this port for sturdy reference creation.")
     .addOptionWithArg({"check_IP"}, KJ_BIND_METHOD(*this, setCheckIP),
                       "<IPv4 (default: 8.8.8.8)>", "IP to connect to in order to find local outside IP.")
     .addOptionWithArg({"check_port"}, KJ_BIND_METHOD(*this, setCheckPort),
