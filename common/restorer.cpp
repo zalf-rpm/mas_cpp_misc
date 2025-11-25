@@ -485,7 +485,7 @@ kj::String Restorer::sturdyRefStr(kj::StringPtr srToken) const {
   //KJ_DBG("signPKArray as hex:", kj::encodeHex(_signPKArray));
   //auto srTokenBase64 = kj::encodeBase64Url(srToken.asBytes());
   auto vatIdBase64 = kj::encodeBase64Url(impl->signPKArray);
-  return kj::str("capnp://", vatIdBase64, "@", impl->host, ":", impl->port,
+  return kj::str("capnp://", vatIdBase64, "@", impl->host, impl->port > 0 ? kj::str(":", impl->port) : ""_kj,
                  srToken == nullptr ? "" : "/", srToken == nullptr ? "" : srToken);
 }
 

@@ -75,7 +75,7 @@ protected:
   kj::String host{kj::str("*")};
   kj::String localHost{kj::str("localhost")};
   kj::String srHost;
-  int srPort{0};
+  int srPort{-1};
   int port{0};
   kj::String checkIP;
   int checkPort{0};

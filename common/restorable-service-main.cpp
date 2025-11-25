@@ -143,7 +143,7 @@ void RestorableServiceMain::startRestorerSetup(mas::schema::common::Identifiable
     conMan->setLocallyUsedHost(localHost);
   }
   auto port = portPromise.then([this](auto port){ 
-    return restorer->setPort(srPort == 0 ? port : srPort).then([port](){
+    return restorer->setPort(srPort < 0 ? port : srPort).then([port](){
         return port; 
       }, [](auto&& e){
         KJ_LOG(ERROR, "Error while trying to set port.", e);
@@ -210,7 +210,7 @@ kj::MainBuilder& RestorableServiceMain::addRestorableServiceOptions()
     .addOptionWithArg({"sr_host"}, KJ_BIND_METHOD(*this, setSrHost),
                       "<IP_or_host_address (default: outside-visible local IP)>", "Use this host for sturdy reference creation.")
     .addOptionWithArg({ "sr_port"}, KJ_BIND_METHOD(*this, setSrPort),
-                      "<port (default: automatic or defined port)>", "Use this port for sturdy reference creation.")
+                      "<0 = no port in SR | port (default: -1 = automatic or via -p defined port)>", "Use this port for sturdy reference creation (or ignore port if 0).")
     .addOptionWithArg({"check_IP"}, KJ_BIND_METHOD(*this, setCheckIP),
                       "<IPv4 (default: 8.8.8.8)>", "IP to connect to in order to find local outside IP.")
     .addOptionWithArg({"check_port"}, KJ_BIND_METHOD(*this, setCheckPort),
