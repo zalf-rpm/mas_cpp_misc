@@ -122,9 +122,6 @@ public:
 
       channel->setRestorer(restorer);
 
-      auto channelSR = restorer->saveStr(channelClient, nullptr, nullptr, false).wait(ioContext.waitScope).sturdyRef;
-      if(outputSturdyRefs && channelSR.size() > 0) std::cout << "channelSR=" << channelSR.cStr() << std::endl;
-
       using SI = mas::schema::fbp::Channel<capnp::AnyPointer>::StartupInfo;
       using P = mas::schema::common::Pair<capnp::Text, SI>;
       using SIC = mas::schema::fbp::Channel<P>;
@@ -140,7 +137,11 @@ public:
           auto info = p.initSnd();
           info.setBufferSize(bufferSize);
           info.setChannel(channelClient);
-          info.setChannelSR(channelSR);
+
+          restorer->save(channelClient, info.initChannelSR(), nullptr, nullptr, nullptr, false).wait(ioContext.waitScope);
+          auto channelSRUrl = restorer->sturdyRefStr(info.getChannelSR().getLocalRef().getText());
+          if(outputSturdyRefs && channelSRUrl.size() > 0) std::cout << "channelSR=" << channelSRUrl.cStr() << std::endl;
+
           info.initReaders(readerSrts.size());
           info.initReaderSRs(readerSrts.size());
           info.initWriters(writerSrts.size());
@@ -148,16 +149,22 @@ public:
           startupInfo = info;
         }
       }
+      else
+      {
+        auto channelSR = restorer->saveStr(channelClient, nullptr, nullptr, false).wait(ioContext.waitScope).sturdyRef;
+        if(outputSturdyRefs && channelSR.size() > 0) std::cout << "channelSR=" << channelSR.cStr() << std::endl;
+      }
 
       auto &rsrts = readerSrts[i];
       for(auto k = 0; k < noOfReadersPerChannel; k++){
         const auto& srt = rsrts[k];
         auto reader = channelClient.readerRequest().send().wait(ioContext.waitScope).getR();
-        auto readerSR = restorer->saveStr(reader, srt, nullptr, false, nullptr, false).wait(ioContext.waitScope).sturdyRef;
-        if(outputSturdyRefs && channelSR.size() > 0) std::cout << "\treaderSR=" << readerSR.cStr() << std::endl;
+
         KJ_IF_MAYBE(info, startupInfo){
           info->getReaders().set(k, kj::mv(reader));
-          info->getReaderSRs().set(k, readerSR);
+          restorer->save(reader, info->getReaderSRs()[k], nullptr, nullptr, nullptr, false).wait(ioContext.waitScope);
+          auto readerSRUrl = restorer->sturdyRefStr(info->getReaderSRs()[k].getLocalRef().getText());
+          if(outputSturdyRefs && readerSRUrl.size() > 0) std::cout << "\treaderSR=" << readerSRUrl.cStr() << std::endl;
         }
       }
       auto &wsrts = writerSrts[i];
@@ -168,7 +175,9 @@ public:
         if(outputSturdyRefs && writerSR.size() > 0) std::cout << "\twriterSR=" << writerSR.cStr() << std::endl;
         KJ_IF_MAYBE(info, startupInfo){
           info->getWriters().set(k, kj::mv(writer));
-          info->getWriterSRs().set(k, writerSR);
+          restorer->save(writer, info->getWriterSRs()[k], nullptr, nullptr, nullptr, false).wait(ioContext.waitScope);
+          auto writerSRUrl = restorer->sturdyRefStr(info->getWriterSRs()[k].getLocalRef().getText());
+          if(outputSturdyRefs && writerSRUrl.size() > 0) std::cout << "\treaderSR=" << writerSRUrl.cStr() << std::endl;
         }
       }
 
