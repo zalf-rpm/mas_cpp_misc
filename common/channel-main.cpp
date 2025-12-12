@@ -148,9 +148,7 @@ public:
           info.initWriterSRs(writerSrts.size());
           startupInfo = info;
         }
-      }
-      else
-      {
+      } else {
         auto channelSR = restorer->saveStr(channelClient, nullptr, nullptr, false).wait(ioContext.waitScope).sturdyRef;
         if(outputSturdyRefs && channelSR.size() > 0) std::cout << "channelSR=" << channelSR.cStr() << std::endl;
       }
@@ -159,25 +157,28 @@ public:
       for(auto k = 0; k < noOfReadersPerChannel; k++){
         const auto& srt = rsrts[k];
         auto reader = channelClient.readerRequest().send().wait(ioContext.waitScope).getR();
-
         KJ_IF_MAYBE(info, startupInfo){
-          info->getReaders().set(k, kj::mv(reader));
           restorer->save(reader, info->getReaderSRs()[k], nullptr, nullptr, nullptr, false).wait(ioContext.waitScope);
           auto readerSRUrl = restorer->sturdyRefStr(info->getReaderSRs()[k].getLocalRef().getText());
           if(outputSturdyRefs && readerSRUrl.size() > 0) std::cout << "\treaderSR=" << readerSRUrl.cStr() << std::endl;
+          info->getReaders().set(k, kj::mv(reader));
+        } else {
+          auto readerSR = restorer->saveStr(reader, srt, nullptr, false, nullptr, false).wait(ioContext.waitScope).sturdyRef;
+          if(outputSturdyRefs && readerSR.size() > 0) std::cout << "\treaderSR=" << readerSR.cStr() << std::endl;
         }
       }
       auto &wsrts = writerSrts[i];
       for(auto k = 0; k < noOfWritersPerChannel; k++){
         const auto& srt = wsrts[k];
         auto writer = channelClient.writerRequest().send().wait(ioContext.waitScope).getW();
-        auto writerSR = restorer->saveStr(writer, srt, nullptr, false, nullptr, false).wait(ioContext.waitScope).sturdyRef;
-        if(outputSturdyRefs && writerSR.size() > 0) std::cout << "\twriterSR=" << writerSR.cStr() << std::endl;
         KJ_IF_MAYBE(info, startupInfo){
-          info->getWriters().set(k, kj::mv(writer));
           restorer->save(writer, info->getWriterSRs()[k], nullptr, nullptr, nullptr, false).wait(ioContext.waitScope);
           auto writerSRUrl = restorer->sturdyRefStr(info->getWriterSRs()[k].getLocalRef().getText());
-          if(outputSturdyRefs && writerSRUrl.size() > 0) std::cout << "\treaderSR=" << writerSRUrl.cStr() << std::endl;
+          if(outputSturdyRefs && writerSRUrl.size() > 0) std::cout << "\twriterSR=" << writerSRUrl.cStr() << std::endl;
+          info->getWriters().set(k, kj::mv(writer));
+        } else {
+          auto writerSR = restorer->saveStr(writer, srt, nullptr, false, nullptr, false).wait(ioContext.waitScope).sturdyRef;
+          if(outputSturdyRefs && writerSR.size() > 0) std::cout << "\twriterSR=" << writerSR.cStr() << std::endl;
         }
       }
 

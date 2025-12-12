@@ -181,6 +181,26 @@ kj::Promise<capnp::Capability::Client> ConnectionManager::tryConnect(kj::StringP
   }
 }
 
+kj::Promise<capnp::Capability::Client> ConnectionManager::tryConnect(mas::schema::persistence::SturdyRef::Reader sturdyRef,
+                                                                     int retryCount, int retrySecs,
+                                                                     bool printRetryMsgs) {
+  try {
+    return connect(sturdyRef);
+  } catch (const std::exception &e) {
+    if (!impl->timer) impl->timer = &(impl->ioContext->provider->getTimer());
+    return impl->timer->afterDelay(retrySecs * kj::SECONDS).then([&]() {
+      if (retryCount == 0) {
+        if (printRetryMsgs) KJ_LOG(INFO, "Couldn't connect to sturdy_ref at", sturdyRef, "!");
+        return kj::Promise<capnp::Capability::Client>(nullptr);
+      }
+      retryCount -= 1;
+      if (printRetryMsgs) KJ_LOG(INFO, "Trying to connect to", sturdyRef, "again in", retrySecs, "s!");
+      retrySecs += 1;
+      return tryConnect(sturdyRef);
+    });
+  }
+}
+
 capnp::Capability::Client ConnectionManager::tryConnectB(kj::StringPtr sturdyRefStr,
                                                          int retryCount, int retrySecs, bool printRetryMsgs) {
   while (true) {
@@ -198,6 +218,77 @@ capnp::Capability::Client ConnectionManager::tryConnectB(kj::StringPtr sturdyRef
       retrySecs += 1;
     }
   }
+}
+
+capnp::Capability::Client ConnectionManager::tryConnectB(mas::schema::persistence::SturdyRef::Reader sturdyRef,
+                                                         int retryCount, int retrySecs, bool printRetryMsgs) {
+  while (true) {
+    try {
+      return connect(sturdyRef).wait(impl->ioContext->waitScope);
+    } catch (const kj::Exception &e) {
+      if (retryCount == 0) {
+        if (printRetryMsgs) KJ_LOG(INFO, "Couldn't connect to sturdy_ref at", sturdyRef, "!");
+        return nullptr;
+      }
+      KJ_LOG(INFO, e);
+      std::this_thread::sleep_for(std::chrono::milliseconds(retrySecs * 1000));
+      retryCount -= 1;
+      if (printRetryMsgs) KJ_LOG(INFO, "Trying to connect to", sturdyRef, "again in", retrySecs, "s!");
+      retrySecs += 1;
+    }
+  }
+}
+
+kj::Promise<capnp::Capability::Client> ConnectionManager::connect(mas::schema::persistence::SturdyRef::Reader sturdyRef) {
+  auto restoreSR =
+      [](capnp::Capability::Client bootstrapCap, kj::StringPtr srToken) {
+        KJ_LOG(INFO, "restoring token", srToken);
+        auto restorerClient = bootstrapCap.castAs<mas::schema::persistence::Restorer>();
+        auto req = restorerClient.restoreRequest();
+        req.initLocalRef().setText(srToken);
+        KJ_LOG(INFO, "making restore request");
+        return req.send().then([](auto &&res) {
+          KJ_LOG(INFO, "send returned");
+          return res.getCap();
+        });
+      };
+
+  auto connectTo =
+      [this, restoreSR](mas::schema::persistence::SturdyRef::Reader sr) mutable {
+        KJ_IF_MAYBE (const clientContext, impl->connections.find(sr.getVat().getAddress().getHost())) {
+          if (sr.hasLocalRef()) return restoreSR((*clientContext)->bootstrap, sr.getLocalRef().getText());
+          return kj::Promise<capnp::Capability::Client>((*clientContext)->bootstrap);
+        } else {
+          auto addr = sr.getVat().getAddress();
+          return impl->ioContext->provider->getNetwork().parseAddress(addr.getHost(), addr.getPort()).then(
+              [](kj::Own<kj::NetworkAddress> &&addr) {
+                return addr->connect().attach(kj::mv(addr));
+              }).then(
+              [restoreSR, this, KJ_MVCAP(addr), KJ_MVCAP(sr)](
+                  kj::Own<kj::AsyncIoStream> &&stream) {
+                capnp::ReaderOptions readerOpts;
+                auto cc = kj::heap<ClientContext>(kj::mv(stream), readerOpts);
+                capnp::Capability::Client bootstrapCap = cc->getMain();
+                cc->bootstrap = bootstrapCap;
+                impl->connections.insert(kj::str(addr.getHost()), kj::mv(cc));
+
+                if (sr.hasLocalRef()) {
+                  return restoreSR(bootstrapCap, sr.getLocalRef().getText());
+                }
+                return kj::Promise<capnp::Capability::Client>(bootstrapCap);
+              }
+          );
+        }
+      };
+
+  if (const auto addr = sturdyRef.getVat().getAddress();
+    addr.getHost() == kj::str(impl->locallyUsedHost, ":", impl->port)) {
+    KJ_LOG(INFO, "connecting to local server");
+    if (sturdyRef.hasLocalRef()) return restoreSR(impl->serverMainInterface, sturdyRef.getLocalRef().getText());
+    else return {impl->serverMainInterface};
+  }
+
+  return connectTo(sturdyRef);
 }
 
 kj::Promise<capnp::Capability::Client> ConnectionManager::connect(kj::Url url) {

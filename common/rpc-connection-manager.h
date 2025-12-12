@@ -21,6 +21,8 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include <kj/compat/url.h>
 #include <capnp/capability.h>
 
+#include "persistence.capnp.h"
+
 namespace mas::infrastructure::common {
 
 class Restorer;
@@ -36,11 +38,18 @@ public:
 	kj::Promise<capnp::Capability::Client> tryConnect(kj::StringPtr sturdyRefStr,
 		int retryCount = 10, int retrySecs = 5, bool printRetryMsgs = true);
 
+	kj::Promise<capnp::Capability::Client> tryConnect(mas::schema::persistence::SturdyRef::Reader sturdyRef,
+			int retryCount = 10, int retrySecs = 5, bool printRetryMsgs = true);
+
 	capnp::Capability::Client tryConnectB(kj::StringPtr sturdyRefStr,
+		int retryCount = 10, int retrySecs = 5, bool printRetryMsgs = true);
+
+	capnp::Capability::Client tryConnectB(mas::schema::persistence::SturdyRef::Reader sturdyRef,
 		int retryCount = 10, int retrySecs = 5, bool printRetryMsgs = true);
 
   kj::Promise<capnp::Capability::Client> connect(kj::Url sturdyRefUrl);
 	kj::Promise<capnp::Capability::Client> connect(kj::StringPtr sturdyRefStr);
+	kj::Promise<capnp::Capability::Client> connect(mas::schema::persistence::SturdyRef::Reader sturdyRef);
 
 	kj::Promise<kj::uint> bind(capnp::Capability::Client mainInterface, kj::StringPtr host, kj::uint port = 0U);
 
