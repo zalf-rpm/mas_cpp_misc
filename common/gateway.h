@@ -1,6 +1,6 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
-* License, v. 2.0. If a copy of the MPL was not distributed with this
-* file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 /*
 Authors:
@@ -15,22 +15,23 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 
 #pragma once
 
+#include <cstdint>
 #include <kj/array.h>
 #include <kj/async.h>
 #include <kj/function.h>
+#include <kj/memory.h>
 #include <kj/string.h>
 #include <kj/timer.h>
 
-#include "restorer.h"
 #include "common.capnp.h"
 #include "persistence.capnp.h"
+#include "restorer.h"
 
 namespace mas::infrastructure::common {
 
-class Gateway final : public mas::schema::persistence::Gateway::Server
-{
+class Gateway final : public mas::schema::persistence::Gateway::Server {
 public:
-  explicit Gateway(kj::Timer& timer, kj::StringPtr name, kj::StringPtr description, uint32_t secsKeepAliveTimeout);
+  explicit Gateway(kj::Timer &timer, kj::StringPtr name, kj::StringPtr description, uint32_t secsKeepAliveTimeout);
   ~Gateway();
 
   kj::Promise<void> info(InfoContext context) override;
@@ -46,7 +47,7 @@ public:
   // }
   kj::Promise<void> register_(RegisterContext context) override;
 
-  void setRestorer(Restorer* r, mas::schema::persistence::Restorer::Client client);
+  void setRestorer(Restorer *r, mas::schema::persistence::Restorer::Client client);
 
   kj::Promise<void> garbageCollectMappings(bool runOnce = false);
 
