@@ -18,18 +18,21 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 
 #include <cstdint>
 #include <kj/array.h>
+#include <kj/map.h>
+#include <kj/memory.h>
+#include <kj/time.h>
+#include <kj/timer.h>
+#include <kj/vector.h>
+#include <random>
+#include <vector>
+
 #include <kj/async.h>
 #include <kj/common.h>
 #include <kj/debug.h>
 #include <kj/encoding.h>
-#include <kj/map.h>
-#include <kj/memory.h>
 #include <kj/string.h>
 #include <kj/thread.h>
-#include <kj/time.h>
-#include <kj/timer.h>
 #include <kj/tuple.h>
-#include <kj/vector.h>
 #define KJ_MVCAP(var) var = kj::mv(var)
 
 #include <capnp/capability.h>
@@ -41,6 +44,32 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include "sole.hpp"
 
 using namespace mas::infrastructure::common;
+
+namespace {
+
+kj::String deterministicUuid(kj::StringPtr seed) {
+  std::vector<uint32_t> seedData;
+  seedData.reserve(seed.size());
+  for (char ch : seed) {
+    seedData.push_back(static_cast<unsigned char>(ch));
+  }
+  if (seedData.empty()) {
+    seedData.push_back(0);
+  }
+
+  std::seed_seq seq(seedData.begin(), seedData.end());
+  std::mt19937_64 rng(seq);
+  uint64_t ab = rng();
+  uint64_t cd = rng();
+
+  // Set RFC 4122 variant + version 4 bits for a UUID-like format.
+  ab = (ab & 0xFFFFFFFFFFFF0FFFULL) | 0x0000000000004000ULL;
+  cd = (cd & 0x3FFFFFFFFFFFFFFFULL) | 0x8000000000000000ULL;
+
+  return kj::str(sole::rebuild(ab, cd).str());
+}
+
+} // namespace
 
 struct Gateway::Impl {
 
@@ -147,19 +176,35 @@ kj::Promise<void> Gateway::restore(RestoreContext context) {
 kj::Promise<void> Gateway::register_(RegisterContext context) {
   auto params = context.getParams();
   if (params.hasCap()) {
-    capnp::MallocMessageBuilder msg;
-    auto srb = context.getResults().initSturdyRef();
-    auto unsaveSrb = msg.initRoot<mas::schema::persistence::SturdyRef>();
-    return impl->restorerPtr->save(params.getCap(), srb, unsaveSrb).then([this, context](auto &&unsaveCap) mutable {
-      auto capId = kj::str(sole::uuid4().str());
-      return impl->addAndStoreMapping(capId, unsaveCap).then([this, context, KJ_MVCAP(capId)](bool success) mutable {
-        auto res = context.getResults();
-        if (success) {
-          auto hb = kj::heap<Impl::Heartbeat>(*impl.get(), capId);
-          res.setHeartbeat(kj::mv(hb));
-          res.setSecsHeartbeatInterval(impl->secsKeepAliveTimeout / kj::SECONDS);
-        }
-      });
+    auto cap = params.getCap();
+    const bool hasSeed = params.hasSecretSeed() && params.getSecretSeed().size() > 0;
+    kj::String capId = hasSeed ? deterministicUuid(params.getSecretSeed()) : kj::str(sole::uuid4().str());
+
+    kj::Promise<void> preRelease = kj::READY_NOW;
+    if (hasSeed) {
+      KJ_IF_MAYBE (existing, impl->id2CountAndUnsaveCap.find(capId)) {
+        auto oldUnsaveCap = kj::get<1>(*existing);
+        impl->id2CountAndUnsaveCap.erase(capId);
+        preRelease = oldUnsaveCap.releaseRequest().send().ignoreResult();
+      }
+    }
+
+    return preRelease.then([this, context, cap, KJ_MVCAP(capId)]() mutable {
+      capnp::MallocMessageBuilder msg;
+      auto srb = context.getResults().initSturdyRef();
+      auto unsaveSrb = msg.initRoot<mas::schema::persistence::SturdyRef>();
+      return impl->restorerPtr->save(cap, srb, unsaveSrb, capId)
+          .then([this, context, KJ_MVCAP(capId)](auto &&unsaveCap) mutable {
+            return impl->addAndStoreMapping(capId, unsaveCap)
+                .then([this, context, KJ_MVCAP(capId)](bool success) mutable {
+                  auto res = context.getResults();
+                  if (success) {
+                    auto hb = kj::heap<Impl::Heartbeat>(*impl.get(), capId);
+                    res.setHeartbeat(kj::mv(hb));
+                    res.setSecsHeartbeatInterval(impl->secsKeepAliveTimeout / kj::SECONDS);
+                  }
+                });
+          });
     });
   }
   return kj::READY_NOW;
