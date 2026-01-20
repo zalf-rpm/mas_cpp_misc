@@ -1,0 +1,10 @@
+{
+  "cmake.sourceDirectory": "/home/vdlugosch/Zalf/zalf-rpm/mas/mas_cpp_misc/common",
+  "cmake.buildDirectory": "${workspaceFolder}/common/_cmake_release",
+  "cmake.configureArgs": ["-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"],
+  "clangd.arguments": [
+    "--compile-commands-dir=${workspaceFolder}",
+    "--header-insertion=iwyu",
+    "--clang-tidy"
+  ]
+}
