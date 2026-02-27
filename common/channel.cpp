@@ -16,9 +16,9 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include "channel.h"
 
 #include <tuple>
+#include <deque>
 
 #include <kj/debug.h>
-#include <kj/thread.h>
 #include <kj/common.h>
 #include <kj/async.h>
 #include <kj/exception.h>
@@ -27,7 +27,6 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include <capnp/message.h>
 #include <capnp/schema.h>
 #include <capnp/dynamic.h>
-#include <iostream>
 
 #include "sole.hpp"
 
@@ -293,7 +292,7 @@ kj::Promise<void> Reader::read(ReadContext context) {
           }
         }
       }, [](kj::Exception &&e) {
-        KJ_LOG(ERROR, "Reader::read: promise_lambda: error: ", e.getDescription().cStr());
+        KJ_LOG(WARNING, "Reader::read: promise_lambda: error: ", e.getDescription().cStr());
       });
     }
   }
@@ -414,7 +413,7 @@ kj::Promise<void> Writer::write(WriteContext context) {
       _channel.impl->buffer.push_front(capnp::clone(v));
       KJ_LOG(INFO, "Writer::write: promise_lambda: wrote value to buffer");
     }, [](kj::Exception &&e) {
-      KJ_LOG(ERROR, "Writer::write: promise_lambda: error: ", e.getDescription().cStr());
+      KJ_LOG(WARNING, "Writer::write: promise_lambda: error: ", e.getDescription().cStr());
     });
   }
 
