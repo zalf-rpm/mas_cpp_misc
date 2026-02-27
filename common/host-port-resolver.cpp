@@ -197,7 +197,7 @@ struct HostPortResolver::Impl {
         }
         return true;
       }, [](auto &&ex) {
-        KJ_LOG(ERROR, "Couldn't request list entries.", ex);
+        KJ_LOG(WARNING, "Couldn't request list entries.", ex);
         return false;
       });
     }
