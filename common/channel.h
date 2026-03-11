@@ -15,17 +15,8 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 
 #pragma once
 
-#include <functional>
-#include <string>
-#include <deque>
-
-#include <kj/debug.h>
-#include <kj/common.h>
 #include <kj/string.h>
-#include <kj/vector.h>
-#include <kj/map.h>
 #include <kj/memory.h>
-#include <kj/thread.h>
 #include <kj/async.h>
 
 #include <capnp/any.h>
