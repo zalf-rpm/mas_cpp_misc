@@ -133,13 +133,13 @@ struct ConnectionManager::Impl {
           auto server = kj::heap<ServerContext>(kj::mv(connection), readerOpts,
                                                 serverMainInterface);
 
-          // Arrange to destroy the server context when all references are gone, or when the
+          // Arrange to destroy the server context when all references are gone or when the
           // EzRpcServer is destroyed (which will destroy the TaskSet).
           tasks.add(server->network.onDisconnect().attach(kj::mv(server)));
           // tasks.add(server->network.onDisconnect().then([]() {
-          //	KJ_LOG(INFO, "disconnecting ok");
+          // 	KJ_LOG(INFO, "disconnecting ok");
           // }, [](auto&& err) {
-          //	KJ_LOG(INFO, "diconnecting error", err);
+          // 	KJ_LOG(INFO, "disconnecting error", err);
           // }).attach(kj::mv(server)));
         }));
   }
