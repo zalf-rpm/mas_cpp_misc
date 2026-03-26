@@ -95,56 +95,50 @@ int Tools::createRandomNumber(int max) {
   return id;
 }
 
-string Tools::trim(const string &s, const string &whitespaces) {
+string Tools::trim(const string& s, const string& whitespaces) {
   string str(s);
   size_t found;
   found = str.find_last_not_of(whitespaces);
-  if (found != string::npos)
-    str.erase(found + 1);
+  if (found != string::npos) str.erase(found + 1);
   found = str.find_first_not_of(whitespaces);
-  if (found != string::npos)
-    str.erase(0, found);
+  if (found != string::npos) str.erase(0, found);
   return str;
 }
 
 namespace {
-void de_capitalizeInPlace(string &s, int(*f)(int) = &toupper) {
-  if (s.begin() == s.end())
-    return;
+void de_capitalizeInPlace(string& s, int (*f)(int) = &toupper) {
+  if (s.begin() == s.end()) return;
 
   for (string::iterator si = s.begin() + 1; si != s.end(); si++) {
-    if (si - 1 == s.begin())
-      *(si - 1) = f(*(si - 1));
+    if (si - 1 == s.begin()) *(si - 1) = f(*(si - 1));
 
     switch (*(si - 1)) {
-      case '-':
-      case '(':
-      case ')':
-      case ',':
-      case '/':
-      case '_':
-        *si = f(*si);
+    case '-':
+    case '(':
+    case ')':
+    case ',':
+    case '/':
+    case '_': *si = f(*si);
     }
   }
 }
-
 }
 
-void Tools::capitalizeInPlace(string &s) {
+void Tools::capitalizeInPlace(string& s) {
   de_capitalizeInPlace(s);
 }
 
-string Tools::capitalize(const string &s) {
+string Tools::capitalize(const string& s) {
   string res = s;
   capitalizeInPlace(res);
   return res;
 }
 
-void Tools::decapitalizeInPlace(string &s) {
+void Tools::decapitalizeInPlace(string& s) {
   de_capitalizeInPlace(s, &tolower);
 }
 
-string Tools::decapitalize(const string &s) {
+string Tools::decapitalize(const string& s) {
   string res = s;
   decapitalizeInPlace(res);
   return res;
@@ -228,8 +222,9 @@ double Tools::cloudAmount2globalRadiation(int doy,
     //double d = ctheta < 0 ? 0 : (1.0 - enc) * d0 + enc * d1;
     //double swf = cos(alph / 2.0) * cos(alph / 2.0);
     double tau = ctheta < 0 || fuzzyIsNull(id) ? 0 : id0 / id;
-    double ds0 = gfaktor < 0 ? d0 * (1.0 - tau) * swf
-                             : d0 * (tau * gfaktor / ctheta + (1.0 - tau) * swf);
+    double ds0 = gfaktor < 0
+                   ? d0 * (1.0 - tau) * swf
+                   : d0 * (tau * gfaktor / ctheta + (1.0 - tau) * swf);
     double ds1 = d1 * swf;
     double ds = ctheta < 0 ? 0 : (1.0 - enc) * ds0 + ds1 * enc;
     double sd = gfaktor * id;
@@ -271,15 +266,15 @@ double Tools::hourlyT(double tmin, double tmax, int h, int sunrise_h) {
   return hourly_T;
 }
 
-double
-Tools::hourlyVaporPressureDeficit(double hourlyTemperature, double dailyTmin, double dailyTavg, double dailyTmax) {
+double Tools::hourlyVaporPressureDeficit(double hourlyTemperature, double dailyTmin, double dailyTavg,
+                                         double dailyTmax) {
   double saturationVapourPressureHourly = 0.6108 * exp(17.27 * hourlyTemperature / (hourlyTemperature + 237.3));
 
   double dewPointTemperatureHourly =
-      -0.0360 * dailyTavg + 0.9679 * dailyTmin + 0.0072 * (dailyTmax - dailyTmin) + 1.0019;
+    -0.0360 * dailyTavg + 0.9679 * dailyTmin + 0.0072 * (dailyTmax - dailyTmin) + 1.0019;
 
   double actualVapourPressureHourly =
-      0.6108 * exp(17.27 * dewPointTemperatureHourly / (dewPointTemperatureHourly + 237.3));
+    0.6108 * exp(17.27 * dewPointTemperatureHourly / (dewPointTemperatureHourly + 237.3));
 
   return saturationVapourPressureHourly - actualVapourPressureHourly;
 }
@@ -295,7 +290,7 @@ double Tools::solarElevation(int hour, double latitude, int dayOfTheYear) {
   double dA = sin(dDecl) * sin(lat_rad);
   double dB = cos(dDecl) * cos(lat_rad);
   double dHa = M_PI * (double(hour) - 12) / 12;
-  return (asin(dA + dB * cos(dHa)));  // can be -ve
+  return (asin(dA + dB * cos(dHa))); // can be -ve
 }
 
 double Tools::hourlyRad(double globrad, double lat, int doy, int h) {
@@ -314,7 +309,7 @@ double Tools::hourlyRad(double globrad, double lat, int doy, int h) {
   return dTotrad;
 }
 
-HistogramData Tools::histogramDataByStepSize(const vector<double> &ys,
+HistogramData Tools::histogramDataByStepSize(const vector<double>& ys,
                                              double step,
                                              int normalizeCount) {
   HistogramData res;
@@ -362,12 +357,12 @@ HistogramData Tools::histogramDataByStepSize(const vector<double> &ys,
   res.classes.erase(res.classes.begin()); //lowest border actually belongs to class above (0 value)
   //cout << "classes: " << classes << endl;
 
-  if (normalizeCount > 1) for (double &c : res.classes) c /= normalizeCount;
+  if (normalizeCount > 1) for (double& c : res.classes) c /= normalizeCount;
   return res;
 }
 
 
-HistogramData Tools::histogramDataByNoOfClasses(const vector<double> &ys, int n,
+HistogramData Tools::histogramDataByNoOfClasses(const vector<double>& ys, int n,
                                                 int normalizeCount) {
   HistogramData res;
   if (ys.empty()) return res;
@@ -399,17 +394,27 @@ HistogramData Tools::histogramDataByNoOfClasses(const vector<double> &ys, int n,
   res.classes.erase(res.classes.begin());
   //cout << "classes: " << classes << endl;
 
-  if (normalizeCount > 1) for (double & c : res.classes) c /= normalizeCount;
+  if (normalizeCount > 1) for (double& c : res.classes) c /= normalizeCount;
   return res;
 }
 
 BoxPlotInfo::BoxPlotInfo()
-    : median(0.0), Q25(0.0), Q75(0.0), min(0.0), max(0.0),
-      minInnerFence(0.0), maxInnerFence(0.0) {}
+: median(0.0)
+, Q25(0.0)
+, Q75(0.0)
+, min(0.0)
+, max(0.0)
+, minInnerFence(0.0)
+, maxInnerFence(0.0) {}
 
 BoxPlotInfo::BoxPlotInfo(double m, double q25, double q75, double min, double max)
-    : median(m), Q25(q25), Q75(q75), min(min), max(max),
-      minInnerFence(0), maxInnerFence(0) {}
+: median(m)
+, Q25(q25)
+, Q75(q75)
+, min(min)
+, max(max)
+, minInnerFence(0)
+, maxInnerFence(0) {}
 
 double BoxPlotInfo::lowerInnerFence(int roundToDigits) const {
   return Tools::round(Q25 - 1.5 * IQ(), roundToDigits);
@@ -461,17 +466,16 @@ string BoxPlotInfo::toString() const {
 }
 
 
-BoxPlotInfo Tools::boxPlotAnalysis(const std::vector<double> &data,
+BoxPlotInfo Tools::boxPlotAnalysis(const std::vector<double>& data,
                                    bool orderedData, int roundToDigits) {
-  if (data.empty())
-    return BoxPlotInfo();
+  if (data.empty()) return BoxPlotInfo();
 
   vector<double> _odata;
   if (!orderedData) {
     _odata.insert(_odata.begin(), data.begin(), data.end());
     sort(_odata.begin(), _odata.end());
   }
-  const vector<double> &odata = orderedData ? data : _odata;
+  const vector<double>& odata = orderedData ? data : _odata;
 
   BoxPlotInfo bpi(median(odata, roundToDigits),
                   quartile(0.25, odata, roundToDigits),
@@ -481,13 +485,12 @@ BoxPlotInfo Tools::boxPlotAnalysis(const std::vector<double> &data,
   //get extreme lower outliers
   remove_copy_if(odata.begin(), odata.end(),
                  inserter(bpi.extremeLowerOutliers, bpi.extremeLowerOutliers.end()),
-                 [&](double elo) { return elo >= bpi.lowerOuterFence(); });//_1 >= bpi.lowerOuterFence());
-//keep just the 10 smallest elements, delete the rest
+                 [&](double elo) { return elo >= bpi.lowerOuterFence(); }); //_1 >= bpi.lowerOuterFence());
+  //keep just the 10 smallest elements, delete the rest
   if (bpi.extremeLowerOutliers.size() > 10) {
     int count = 0;
     auto i = bpi.extremeLowerOutliers.begin();
-    while (i != bpi.extremeLowerOutliers.end() && count++ < 10)
-      i++;
+    while (i != bpi.extremeLowerOutliers.end() && count++ < 10) i++;
     bpi.extremeLowerOutliers.erase(i, bpi.extremeLowerOutliers.end());
   }
 
@@ -500,8 +503,7 @@ BoxPlotInfo Tools::boxPlotAnalysis(const std::vector<double> &data,
   if (bpi.mildLowerOutliers.size() > 10) {
     int count = 0;
     auto i = bpi.mildLowerOutliers.begin();
-    while (i != bpi.mildLowerOutliers.end() && count++ < 10)
-      i++;
+    while (i != bpi.mildLowerOutliers.end() && count++ < 10) i++;
     bpi.mildLowerOutliers.erase(i, bpi.mildLowerOutliers.end());
   }
 
@@ -514,8 +516,7 @@ BoxPlotInfo Tools::boxPlotAnalysis(const std::vector<double> &data,
   if (bpi.mildUpperOutliers.size() > 10) {
     int count = 0;
     auto i = bpi.mildUpperOutliers.end();
-    while (i != bpi.mildUpperOutliers.begin() && count++ < 10)
-      i--;
+    while (i != bpi.mildUpperOutliers.begin() && count++ < 10) i--;
     bpi.mildUpperOutliers.erase(bpi.mildUpperOutliers.begin(), i);
   }
 
@@ -528,17 +529,15 @@ BoxPlotInfo Tools::boxPlotAnalysis(const std::vector<double> &data,
   if (bpi.extremeUpperOutliers.size() > 10) {
     int count = 0;
     auto i = bpi.extremeUpperOutliers.end();
-    while (i != bpi.extremeUpperOutliers.begin() && count++ < 10)
-      i--;
+    while (i != bpi.extremeUpperOutliers.begin() && count++ < 10) i--;
     bpi.extremeUpperOutliers.erase(bpi.extremeUpperOutliers.begin(), i);
   }
 
   //get smallest value above lower inner fence
   bpi.minInnerFence = bpi.min;
   auto ci = find_if(odata.begin(), odata.end(),
-                   [&](double lif) { return lif > bpi.lowerInnerFence(); });//_1 > bpi.lowerInnerFence());
-  if (ci != odata.end())
-    bpi.minInnerFence = *ci;
+                    [&](double lif) { return lif > bpi.lowerInnerFence(); }); //_1 > bpi.lowerInnerFence());
+  if (ci != odata.end()) bpi.minInnerFence = *ci;
 
   //get largest value below upper inner fence
   bpi.maxInnerFence = bpi.max;
@@ -547,10 +546,9 @@ BoxPlotInfo Tools::boxPlotAnalysis(const std::vector<double> &data,
   while (ci != odata.end()) {
     cilast = ci++;
     ci = find_if(ci, odata.end(),
-                 [&](double uif) { return uif < bpi.upperInnerFence(); });//_1 < bpi.upperInnerFence());
+                 [&](double uif) { return uif < bpi.upperInnerFence(); }); //_1 < bpi.upperInnerFence());
   }
-  if (cilast != odata.end())
-    bpi.maxInnerFence = *cilast;
+  if (cilast != odata.end()) bpi.maxInnerFence = *cilast;
 
   return bpi;
 }
@@ -564,50 +562,40 @@ return isEven(size)
 }
 */
 
-double Tools::quartile(double xth, const vector<double> &odata, int roundToDigits) {
+double Tools::quartile(double xth, const vector<double>& odata, int roundToDigits) {
   assert(odata.size() <= INT_MAX);
-  int size = (int) odata.size();
+  int size = (int)odata.size();
   switch (size) {
-    case 0:
-      return 0;
-    case 1:
-      return odata.at(0);
-    case 2:
-      return xth < 0.5 ? odata.at(0) : odata.at(1);
-    default:;
+  case 0: return 0;
+  case 1: return odata.at(0);
+  case 2: return xth < 0.5 ? odata.at(0) : odata.at(1);
+  default: ;
   }
 
   double i;
   double frac = modf(xth * size, &i);
   i -= 1; //0-indexed vector position
-  if (i < 0 || i >= size)
-    i = 0;
+  if (i < 0 || i >= size) i = 0;
   double ip1 = i + 1;
-  if (ip1 >= size)
-    ip1 = size - 1;
+  if (ip1 >= size) ip1 = size - 1;
 
   return Tools::round(odata.at(int(i)) + frac * (odata.at(int(ip1)) - odata.at(int(i))), roundToDigits);
 }
 
 std::pair<double, int> Tools::decomposeIntoSci(double value) {
-  if (abs(value) < 0.000001)
-    return make_pair(0.0, 0);
+  if (abs(value) < 0.000001) return make_pair(0.0, 0);
 
   double man = value;
   int exp = 0;
 
   if (abs(man) > 0.1) {
-    while (abs(man / 10) > 1)
-      man /= 10, exp++;
+    while (abs(man / 10) > 1) man /= 10, exp++;
 
-    if (abs(man) > 1)
-      man /= 10, exp++;
+    if (abs(man) > 1) man /= 10, exp++;
   } else {
-    while (abs(man * 10) < 0.1)
-      man *= 10, exp--;
+    while (abs(man * 10) < 0.1) man *= 10, exp--;
 
-    if (abs(man) < 0.1)
-      man *= 10, exp--;
+    if (abs(man) < 0.1) man *= 10, exp--;
   }
 
   //cout << "decomposeIntoSci(" << value << ") = "
@@ -620,30 +608,26 @@ std::pair<double, int> Tools::decomposeIntoSci(double value) {
 int Tools::integerRound1stDigit(int value) {
   auto v = div(value, 10);
   switch (v.rem) {
-    case 0:
-    case 1:
-    case 2:
-    case 3:
-    case 4:
-    case -1:
-    case -2:
-    case -3:
-    case -4:
-      return v.quot * 10;
-    case 5:
-    case 6:
-    case 7:
-    case 8:
-    case 9:
-      return v.quot * 10 + 10;
-    case -5:
-    case -6:
-    case -7:
-    case -8:
-    case -9:
-      return v.quot * 10 - 10;
-    default:
-      return value;
+  case 0:
+  case 1:
+  case 2:
+  case 3:
+  case 4:
+  case -1:
+  case -2:
+  case -3:
+  case -4: return v.quot * 10;
+  case 5:
+  case 6:
+  case 7:
+  case 8:
+  case 9: return v.quot * 10 + 10;
+  case -5:
+  case -6:
+  case -7:
+  case -8:
+  case -9: return v.quot * 10 - 10;
+  default: return value;
   }
 }
 
@@ -665,14 +649,12 @@ int Tools::roundShiftedInt(double value, int8_t roundToDigits) {
 }
 
 double Tools::floor(double value, int digits, bool trailingDigits) {
-  if (trailingDigits)
-    return std::floor(value * std::pow(double(10), digits)) / std::pow(double(10), digits);
+  if (trailingDigits) return std::floor(value * std::pow(double(10), digits)) / std::pow(double(10), digits);
   return std::floor(value / std::pow(double(10), digits)) * std::pow(double(10), digits);
 }
 
 double Tools::ceil(double value, int digits, bool trailingDigits) {
-  if (trailingDigits)
-    return std::ceil(value * std::pow(double(10), digits)) / std::pow(double(10), digits);
+  if (trailingDigits) return std::ceil(value * std::pow(double(10), digits)) / std::pow(double(10), digits);
   return std::ceil(value / std::pow(double(10), digits)) * std::pow(double(10), digits);
 }
 
@@ -685,17 +667,30 @@ void Tools::testRoundFloorCeil() {
   assert(round(1.54, 1) == 1.5);
   assert(round(1.5, 1) == 1.5);
 
+  assert(round(1111111.123456, 3) == 1111111.123);
+  assert(round(1111111.123556, 3) == 1111111.124);
+  assert(round(1111111.123656, 3) == 1111111.124);
+  assert(round(111111111.123656, 5) == 111111111.12366);
+
   assert(roundShiftedInt(1.5555, 3) == 1556);
   assert(roundShiftedInt(1.5551, 3) == 1555);
   assert(roundShiftedInt(1.5559, 3) == 1556);
 
-  assert(roundRT<int>(123., -1) == 120);
-  assert(roundRT<int>(125., -1) == 130);
-  assert(roundRT<int>(130., -1) == 130);
+  assert(round_to_digits<int>(123., -1) == 120);
+  assert(round_to_digits<int>(125., -1) == 130);
+  assert(round_to_digits<int>(130., -1) == 130);
 
-  assert(roundRT<int>(123456., -4) == 120000);
-  assert(roundRT<int>(125456., -4) == 130000);
-  assert(roundRT<int>(120456., -4) == 120000);
+  assert(round_to_digits<int>(123456., -4) == 120000);
+  assert(round_to_digits<int>(125456., -4) == 130000);
+  assert(round_to_digits<int>(120456., -4) == 120000);
+
+  // assert(roundRT<int>(123., -1) == 120);
+  // assert(roundRT<int>(125., -1) == 130);
+  // assert(roundRT<int>(130., -1) == 130);
+  //
+  // assert(roundRT<int>(123456., -4) == 120000);
+  // assert(roundRT<int>(125456., -4) == 130000);
+  // assert(roundRT<int>(120456., -4) == 120000);
 
   assert(floor(1.5) == 1);
   assert(floor(1.4) == 1);
