@@ -17,6 +17,11 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 
 #include <deque>
 #include <tuple>
+#include <chrono>
+#include <ctime>
+#include <iomanip>
+#include <iostream>
+#include <numeric>
 
 #include <kj/async.h>
 #include <kj/common.h>
@@ -34,8 +39,9 @@ using namespace std;
 using namespace mas::infrastructure::common;
 
 struct Channel::Impl {
-  Channel &self;
-  mas::infrastructure::common::Restorer *restorer{nullptr};
+  Channel& self;
+  mas::infrastructure::common::Restorer* restorer{nullptr};
+  kj::Timer& timer;
   kj::String id;
   kj::String name{kj::str("Channel")};
   kj::String description;
@@ -51,17 +57,147 @@ struct Channel::Impl {
   // mas::schema::common::Action::Client unregisterAction{nullptr};
   bool channelShouldBeClosedOnEmptyBuffer = false;
   bool channelCanBeClosed = false;
+  kj::Own<kj::PromiseFulfiller<void>> closeChannelFulfiller;
+  uint64_t totalNoOfIpsReceived{0};
+  bool weDoHaveImmediateStatsListeners{false};
 
-  Impl(Channel &self, mas::infrastructure::common::Restorer *restorer, kj::StringPtr name, kj::StringPtr description,
-       uint64_t bufferSize)
-      : self(self), id(kj::str(sole::uuid4().str())), name(kj::str(name)), description(kj::str(description)),
-        bufferSize(std::max(static_cast<uint64_t>(1), bufferSize)) {
+  struct StatsCB {
+    AnyPointerChannel::StatsCallback::Client callback;
+    uint32_t updateIntervalInMs{1000};
+    uint32_t dueInMs{0};
+  };
+
+  kj::HashMap<kj::String, StatsCB> statsCBs;
+
+  class UnregStatsCallback : public AnyPointerChannel::StatsCallback::Unregister::Server {
+    kj::HashMap<kj::String, StatsCB>& _statsCBs;
+    kj::String _id;
+
+  public:
+    UnregStatsCallback(kj::HashMap<kj::String, StatsCB>& statsCBs, kj::StringPtr id) : _statsCBs(statsCBs)
+      , _id(kj::str(id)) {}
+
+    ~UnregStatsCallback() = default;
+
+    kj::Promise<void> unreg(UnregContext context) override {
+      _statsCBs.erase(_id);
+      return kj::READY_NOW;
+    }
+  };
+
+  AnyPointerChannel::StatsCallback::Unregister::Client createAndStoreStatsCallback(
+    AnyPointerChannel::StatsCallback::Client statsCB,
+    uint32_t updateIntervalInMs) {
+    auto id = kj::str(sole::uuid4().str());
+    if (updateIntervalInMs == 0) weDoHaveImmediateStatsListeners = true;
+    statsCBs.insert(kj::str(id), Impl::StatsCB{statsCB, updateIntervalInMs, updateIntervalInMs});
+    return kj::heap<UnregStatsCallback>(statsCBs, id);
+  }
+
+  std::string formatLocalTimeWithMillis(std::chrono::system_clock::time_point tp) {
+    using namespace std::chrono;
+
+    auto tt = system_clock::to_time_t(tp);
+    std::tm tm = *std::localtime(&tt);
+
+    //    auto ms = duration_cast<milliseconds>(tp.time_since_epoch()) % 1000;
+
+    std::ostringstream oss;
+    oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    //<< '.' << std::setw(3) << std::setfill('0') << ms.count();
+
+    return oss.str();
+  }
+
+
+  kj::Promise<void> sendStats(const bool sendNow = false) {
+    // no listeners for stats attached
+    if (statsCBs.size() == 0) {
+      return timer.afterDelay(1000 * kj::MILLISECONDS).then([this] { return sendStats(); });
+    }
+
+    // we are supposed to send stats immediately
+    if (sendNow) {
+      // and we have some listeners who want that
+      if (weDoHaveImmediateStatsListeners) {
+        // continue down
+      } else {
+        // no listeners who want that
+        return kj::READY_NOW;
+      }
+    }
+
+    auto proms = kj::heapArrayBuilder<kj::Promise<void>>(statsCBs.size() +
+                                                         (sendNow ? 0 : 1));
+    uint32_t minIntervalInMs = 0;
+    // update due time
+    for (auto& [key, statsCB] : statsCBs) {
+      minIntervalInMs = minIntervalInMs == 0
+                          ? statsCB.updateIntervalInMs
+                          : std::min(minIntervalInMs, statsCB.updateIntervalInMs);
+    }
+    uint32_t minDueInMS = minIntervalInMs;
+
+    for (auto& [id, statsCB] : statsCBs) {
+      // in timer mode don't send stats which are requested on every message
+      if (!sendNow && statsCB.updateIntervalInMs == 0) {
+        proms.add(kj::READY_NOW);
+        continue;
+      }
+
+      auto req = statsCB.callback.statusRequest();
+      auto stats = req.initStats();
+      stats.setNoOfWaitingWriters(blockingWriteFulfillers.size());
+      stats.setNoOfWaitingReaders(blockingReadFulfillers.size());
+      stats.setNoOfIpsInQueue(buffer.size());
+      stats.setTotalNoOfIpsReceived(totalNoOfIpsReceived);
+      stats.setUpdateIntervalInMs(statsCB.updateIntervalInMs);
+      const auto now = std::chrono::system_clock::now();
+      auto time = formatLocalTimeWithMillis(now);
+      stats.setTimestamp(time);
+
+      // count down the due time for the next update
+      auto dueInMs = static_cast<int64_t>(statsCB.dueInMs) - minIntervalInMs;
+      // send update for this listener
+      if (dueInMs <= 0) {
+        statsCB.dueInMs = statsCB.updateIntervalInMs;
+        proms.add(req.send().then([](auto&& res) {},
+                                  [this, id = kj::str(id)](kj::Exception&& err) {
+                                    //KJ_DBG("Error sending stats.", err);
+                                    statsCBs.erase(id);
+                                  }));
+      } else {
+        statsCB.dueInMs = static_cast<uint32_t>(dueInMs);
+        proms.add(kj::READY_NOW);
+      }
+
+      minDueInMS = std::min(minDueInMS, statsCB.dueInMs);
+    }
+
+    if (sendNow) return kj::joinPromises(proms.finish());
+
+    auto newDelay = std::min(minDueInMS, minIntervalInMs);
+    //KJ_DBG(newDelay, minIntervalInMs, sendNow);
+    proms.add(timer.afterDelay(newDelay * kj::MILLISECONDS).then([] {}));
+    return kj::joinPromises(proms.finish()).then([this] { return sendStats(); });
+  }
+
+  Impl(Channel& self, mas::infrastructure::common::Restorer* restorer, kj::StringPtr name,
+       kj::StringPtr description,
+       uint64_t bufferSize,
+       kj::Timer& timer)
+  : self(self)
+  , timer(timer)
+  , id(kj::str(sole::uuid4().str()))
+  , name(kj::str(name))
+  , description(kj::str(description))
+  , bufferSize(std::max(static_cast<uint64_t>(1), bufferSize)) {
     setRestorer(restorer);
   }
 
   ~Impl() = default;
 
-  void setRestorer(mas::infrastructure::common::Restorer *restorer) {
+  void setRestorer(mas::infrastructure::common::Restorer* restorer) {
     if (restorer != nullptr) {
       this->restorer = restorer;
       // restorer->setRestoreCallback([this](kj::StringPtr containerId) -> capnp::Capability::Client {
@@ -88,8 +224,9 @@ struct Channel::Impl {
   }
 };
 
-Channel::Channel(kj::StringPtr name, kj::StringPtr description, uint64_t bufferSize, Restorer *restorer)
-    : impl(kj::heap<Impl>(*this, restorer, name, description, bufferSize)) {}
+Channel::Channel(kj::StringPtr name, kj::StringPtr description, uint64_t bufferSize, kj::Timer& timer,
+                 Restorer* restorer)
+: impl(kj::heap<Impl>(*this, restorer, name, description, bufferSize, timer)) {}
 
 Channel::~Channel() = default;
 
@@ -106,7 +243,7 @@ kj::Promise<void> Channel::save(SaveContext context) {
   KJ_LOG(INFO, "Channel::save: message received");
   if (impl->restorer) {
     return impl->restorer->save(impl->client, context.getResults().initSturdyRef(), context.getResults().initUnsaveSR())
-        .ignoreResult();
+               .ignoreResult();
   }
   return kj::READY_NOW;
 }
@@ -114,8 +251,7 @@ kj::Promise<void> Channel::save(SaveContext context) {
 void Channel::closedReader(kj::StringPtr readerId) {
   impl->readers.erase(readerId);
   // now that all readers disconnected, turn of auto-closing readers
-  if (kj::size(impl->readers) == 0)
-    impl->sendCloseOnEmptyBuffer = false;
+  if (kj::size(impl->readers) == 0) impl->sendCloseOnEmptyBuffer = false;
   KJ_LOG(INFO, "Channel::closedReader: number of readers left:", kj::size(impl->readers));
   // cout << "Channel::closedReader: number of readers left:" << kj::size(impl->readers) << endl;
 }
@@ -136,7 +272,7 @@ void Channel::closedWriter(kj::StringPtr writerId) {
     // as we just received a done message which should be distributed and would
     // fill the buffer, unblock all readers, so they send the done message
     while (kj::size(impl->blockingReadFulfillers) > 0) {
-      auto &brf = impl->blockingReadFulfillers.back();
+      auto& brf = impl->blockingReadFulfillers.back();
       brf->fulfill(nullptr); // kj::Maybe<AnyPointerMsg::Reader>());
       impl->blockingReadFulfillers.pop_back();
       KJ_LOG(INFO, "Channel::closedWriter: sent done to reader on last finished writer");
@@ -178,18 +314,35 @@ kj::Promise<void> Channel::setAutoCloseSemantics(SetAutoCloseSemanticsContext co
   return kj::READY_NOW;
 }
 
-bool Channel::canBeClosed() const { return impl->channelCanBeClosed; }
+kj::Promise<void> Channel::closeChannel() {
+  auto paf = kj::newPromiseAndFulfiller<void>();
+  impl->closeChannelFulfiller = kj::mv(paf.fulfiller);
+  return kj::mv(paf.promise);
+}
 
 kj::Promise<void> Channel::close(CloseContext context) {
   KJ_LOG(INFO, "Channel::close: message received", context.getParams().getWaitForEmptyBuffer());
   if (!context.getParams().getWaitForEmptyBuffer() || impl->buffer.empty()) {
     impl->channelCanBeClosed = true;
+    impl->closeChannelFulfiller->fulfill();
   } else {
     impl->channelShouldBeClosedOnEmptyBuffer = true;
     impl->sendCloseOnEmptyBuffer = true;
   }
   return kj::READY_NOW;
 }
+
+kj::Promise<void> Channel::registerStatsCallback(RegisterStatsCallbackContext context) {
+  KJ_LOG(INFO, "Channel::registerStatsCallback: message received");
+  auto unregCB = impl->createAndStoreStatsCallback(
+                                                   context.getParams().getCallback(),
+                                                   context.getParams().
+                                                           getUpdateIntervalInMs());
+  context.getResults().setUnregisterCallback(unregCB);
+  return kj::READY_NOW;
+}
+
+kj::Promise<void> Channel::sendStats() { return impl->sendStats(); }
 
 AnyPointerChannel::Client Channel::getClient() { return impl->client; }
 
@@ -198,9 +351,10 @@ void Channel::setClient(AnyPointerChannel::Client c) { impl->client = c; }
 // mas::schema::common::Action::Client Channel::getUnregisterAction() { return impl->unregisterAction; }
 // void Channel::setUnregisterAction(mas::schema::common::Action::Client unreg) { impl->unregisterAction = unreg; }
 
-void Channel::setRestorer(mas::infrastructure::common::Restorer *restorer) { impl->setRestorer(restorer); }
+void Channel::setRestorer(mas::infrastructure::common::Restorer* restorer) { impl->setRestorer(restorer); }
 
-Reader::Reader(Channel &c) : _channel(c), _id(kj::str(sole::uuid4().str())) {}
+Reader::Reader(Channel& c) : _channel(c)
+                           , _id(kj::str(sole::uuid4().str())) {}
 
 kj::Promise<void> Reader::info(InfoContext context) {
   KJ_LOG(INFO, "Reader::info: message received");
@@ -209,17 +363,18 @@ kj::Promise<void> Reader::info(InfoContext context) {
   rs.setId(_id);
   rs.setName(kj::str(channelNameOrId, "::", _id));
   rs.setDescription(
-      kj::str("Port (ID: ", _id, ") @ Channel '", _channel.impl->name, "' (ID: ", _channel.impl->id, ")"));
+                    kj::str("Port (ID: ", _id, ") @ Channel '", _channel.impl->name, "' (ID: ", _channel.impl->id,
+                            ")"));
   return kj::READY_NOW;
 }
 
 kj::Promise<void> Reader::save(SaveContext context) {
   KJ_LOG(INFO, "Reader::save: message received");
   if (_channel.impl->restorer) {
-    KJ_IF_MAYBE (client, _channel.impl->readers.find(_id)) {
+    KJ_IF_MAYBE(client, _channel.impl->readers.find(_id)) {
       return _channel.impl->restorer
-          ->save(*client, context.getResults().initSturdyRef(), context.getResults().initUnsaveSR())
-          .ignoreResult();
+                     ->save(*client, context.getResults().initSturdyRef(), context.getResults().initUnsaveSR())
+                     .ignoreResult();
     }
   }
   return kj::READY_NOW;
@@ -228,13 +383,13 @@ kj::Promise<void> Reader::save(SaveContext context) {
 kj::Promise<void> Reader::read(ReadContext context) {
   KJ_REQUIRE(!_closed, "Reader already closed.", _closed);
 
-  auto &c = _channel;
-  auto &b = c.impl->buffer;
+  auto& c = _channel;
+  auto& b = c.impl->buffer;
 
   // the buffer is not empty, send next value
   if (!b.empty()) {
     KJ_LOG(INFO, "Reader::read: buffer not empty, send next value");
-    auto &&v = b.back();
+    auto&& v = b.back();
     KJ_ASSERT(v.get()->isValue(), "Msg contains a value, because before buffering we checked for done.");
     context.getResults().setValue(v.get()->getValue());
     b.pop_back();
@@ -242,7 +397,7 @@ kj::Promise<void> Reader::read(ReadContext context) {
     // unblock a writer unless we're about to close down
     if (!c.impl->blockingWriteFulfillers.empty() && !c.impl->sendCloseOnEmptyBuffer) {
       KJ_LOG(INFO, "Reader::read: unblock next writer");
-      auto &&bwf = c.impl->blockingWriteFulfillers.back();
+      auto&& bwf = c.impl->blockingWriteFulfillers.back();
       bwf->fulfill();
       c.impl->blockingWriteFulfillers.pop_back();
     }
@@ -250,6 +405,7 @@ kj::Promise<void> Reader::read(ReadContext context) {
     // check if the channel is supposed to be closed and just waiting for an empty buffer
     if (b.empty() && c.impl->channelShouldBeClosedOnEmptyBuffer) {
       c.impl->channelCanBeClosed = true;
+      c.impl->closeChannelFulfiller->fulfill();
     }
 
     return kj::READY_NOW;
@@ -269,7 +425,7 @@ kj::Promise<void> Reader::read(ReadContext context) {
     // if there are other readers waiting close them as well
     while (!c.impl->blockingReadFulfillers.empty()) {
       KJ_LOG(INFO, "Reader::read: close other waiting readers");
-      auto &&brf = c.impl->blockingReadFulfillers.back();
+      auto&& brf = c.impl->blockingReadFulfillers.back();
       brf->fulfill(nullptr);
       c.impl->blockingReadFulfillers.pop_back();
     }
@@ -279,12 +435,12 @@ kj::Promise<void> Reader::read(ReadContext context) {
 
   KJ_LOG(INFO, "Reader::read: block, because no value to read");
   auto paf = kj::newPromiseAndFulfiller<kj::Maybe<AnyPointerMsg::Reader>>();
-  auto *fulfillerPtr = paf.fulfiller.get();
+  auto* fulfillerPtr = paf.fulfiller.get();
   c.impl->blockingReadFulfillers.push_front(kj::mv(paf.fulfiller));
 
   // This guard runs its lambda when it is destroyed (i.e. when the promise is canceled).
   auto cancelGuard = kj::defer([this, fulfillerPtr]() {
-    auto &q = _channel.impl->blockingReadFulfillers;
+    auto& q = _channel.impl->blockingReadFulfillers;
     for (auto it = q.begin(); it != q.end(); ++it) {
       if (it->get() == fulfillerPtr) {
         q.erase(it);
@@ -295,33 +451,33 @@ kj::Promise<void> Reader::read(ReadContext context) {
   });
 
   return kj::mv(paf.promise)
-      .then([context, this](kj::Maybe<AnyPointerMsg::Reader> msg) mutable {
-        KJ_REQUIRE(!_closed, "Reader already closed.", _closed);
+         .then([context, this](kj::Maybe<AnyPointerMsg::Reader> msg) mutable {
+           KJ_REQUIRE(!_closed, "Reader already closed.", _closed);
 
-        if (_channel.impl->sendCloseOnEmptyBuffer && msg == nullptr) {
-          context.getResults().setDone();
-          KJ_LOG(INFO, "Reader::read: promise_lambda: sending done to reader");
-          _channel.closedReader(id());
-        } else {
-          KJ_IF_MAYBE (m, msg) {
-            context.getResults().setValue(m->getValue());
-            KJ_LOG(INFO, "Reader::read: promise_lambda: sending value to reader");
-          }
-        }
-      })
-      .attach(kj::mv(cancelGuard));
+           if (_channel.impl->sendCloseOnEmptyBuffer && msg == nullptr) {
+             context.getResults().setDone();
+             KJ_LOG(INFO, "Reader::read: promise_lambda: sending done to reader");
+             _channel.closedReader(id());
+           } else {
+             KJ_IF_MAYBE(m, msg) {
+               context.getResults().setValue(m->getValue());
+               KJ_LOG(INFO, "Reader::read: promise_lambda: sending value to reader");
+             }
+           }
+         })
+         .attach(kj::mv(cancelGuard));
 }
 
 kj::Promise<void> Reader::readIfMsg(ReadIfMsgContext context) {
   KJ_REQUIRE(!_closed, "Reader already closed.", _closed);
 
-  auto &c = _channel;
-  auto &b = c.impl->buffer;
+  auto& c = _channel;
+  auto& b = c.impl->buffer;
 
   // the buffer is not empty, send next the value
   if (!b.empty()) {
     KJ_LOG(INFO, "Reader::readIfMsg: buffer not empty, send next value");
-    auto &&v = b.back();
+    auto&& v = b.back();
     KJ_ASSERT(v.get()->isValue(), "Msg contains a value, because before buffering we checked for done.");
     context.getResults().setValue(v.get()->getValue());
     b.pop_back();
@@ -329,7 +485,7 @@ kj::Promise<void> Reader::readIfMsg(ReadIfMsgContext context) {
     // unblock a writer unless we're about to close down
     if (!c.impl->blockingWriteFulfillers.empty() && !c.impl->sendCloseOnEmptyBuffer) {
       KJ_LOG(INFO, "Reader::readIfMsg: unblock next writer");
-      auto &&bwf = c.impl->blockingWriteFulfillers.back();
+      auto&& bwf = c.impl->blockingWriteFulfillers.back();
       bwf->fulfill();
       c.impl->blockingWriteFulfillers.pop_back();
     }
@@ -337,6 +493,7 @@ kj::Promise<void> Reader::readIfMsg(ReadIfMsgContext context) {
     // check if the channel is supposed to be closed and just waiting for an empty buffer
     if (b.empty() && c.impl->channelShouldBeClosedOnEmptyBuffer) {
       c.impl->channelCanBeClosed = true;
+      c.impl->closeChannelFulfiller->fulfill();
     }
 
     return kj::READY_NOW;
@@ -356,7 +513,7 @@ kj::Promise<void> Reader::readIfMsg(ReadIfMsgContext context) {
     // if there are other readers waiting close them as well
     while (!c.impl->blockingReadFulfillers.empty()) {
       KJ_LOG(INFO, "Reader::readIfMsg: close other waiting readers");
-      auto &&brf = c.impl->blockingReadFulfillers.back();
+      auto&& brf = c.impl->blockingReadFulfillers.back();
       brf->fulfill(nullptr);
       c.impl->blockingReadFulfillers.pop_back();
     }
@@ -375,7 +532,8 @@ kj::Promise<void> Reader::close(CloseContext context) {
   return kj::READY_NOW;
 }
 
-Writer::Writer(Channel &c) : _channel(c), _id(kj::str(sole::uuid4().str())) {}
+Writer::Writer(Channel& c) : _channel(c)
+                           , _id(kj::str(sole::uuid4().str())) {}
 
 kj::Promise<void> Writer::info(InfoContext context) {
   KJ_LOG(INFO, "Writer::info: message received");
@@ -384,17 +542,18 @@ kj::Promise<void> Writer::info(InfoContext context) {
   rs.setId(_id);
   rs.setName(kj::str(channelNameOrId, "::", _id));
   rs.setDescription(
-      kj::str("Port (ID: ", _id, ") @ Channel '", _channel.impl->name, "' (ID: ", _channel.impl->id, ")"));
+                    kj::str("Port (ID: ", _id, ") @ Channel '", _channel.impl->name, "' (ID: ", _channel.impl->id,
+                            ")"));
   return kj::READY_NOW;
 }
 
 kj::Promise<void> Writer::save(SaveContext context) {
   KJ_LOG(INFO, "Writer::save: message received");
   if (_channel.impl->restorer) {
-    KJ_IF_MAYBE (client, _channel.impl->writers.find(_id)) {
+    KJ_IF_MAYBE(client, _channel.impl->writers.find(_id)) {
       return _channel.impl->restorer
-          ->save(*client, context.getResults().initSturdyRef(), context.getResults().initUnsaveSR())
-          .ignoreResult();
+                     ->save(*client, context.getResults().initSturdyRef(), context.getResults().initUnsaveSR())
+                     .ignoreResult();
     }
   }
   return kj::READY_NOW;
@@ -404,46 +563,48 @@ kj::Promise<void> Writer::write(WriteContext context) {
   KJ_REQUIRE(!_closed, "Writer already closed.", _closed);
 
   auto v = context.getParams();
-  auto &c = _channel;
-  auto &b = c.impl->buffer;
+  auto& c = _channel;
+  auto& b = c.impl->buffer;
 
   // don't accept any further writes if the channel is supposed to be closed (now or when the buffer is empty)
   if (c.impl->channelCanBeClosed || c.impl->channelShouldBeClosedOnEmptyBuffer) {
-    return kj::READY_NOW;
+    return c.impl->sendStats(true); //kj::READY_NOW;
   }
 
   // if we received a done, this writer can be removed
   if (v.isDone()) {
     KJ_LOG(INFO, "Writer::write: received done -> remove writer", id());
     c.closedWriter(id());
-    return kj::READY_NOW;
+    return c.impl->sendStats(true); //kj::READY_NOW;
   }
 
   // there's a reader waiting
   if (!c.impl->blockingReadFulfillers.empty()) {
     KJ_LOG(INFO, "Writer::write: unblock waiting reader");
-    auto &&brf = c.impl->blockingReadFulfillers.back();
+    auto&& brf = c.impl->blockingReadFulfillers.back();
     brf->fulfill(v);
+    c.impl->totalNoOfIpsReceived++;
     c.impl->blockingReadFulfillers.pop_back();
-    return kj::READY_NOW;
+    return c.impl->sendStats(true); //kj::READY_NOW;
   }
 
   // there space to store the message
   if (b.size() < c.impl->bufferSize) {
     KJ_LOG(INFO, "Writer::write: no reader waiting and space in buffer -> storing message");
     b.push_front(capnp::clone(v));
-    return kj::READY_NOW;
+    c.impl->totalNoOfIpsReceived++;
+    return c.impl->sendStats(true); //kj::READY_NOW;
   }
 
   // block until the buffer has space
   KJ_LOG(INFO, "Writer::write: no reader waiting and no space in buffer -> block, waiting for reader");
   auto paf = kj::newPromiseAndFulfiller<void>();
-  auto *fulfillerPtr = paf.fulfiller.get();
+  auto* fulfillerPtr = paf.fulfiller.get();
   c.impl->blockingWriteFulfillers.push_front(kj::mv(paf.fulfiller));
 
   // This guard runs its lambda when it is destroyed (i.e. when the promise is canceled).
   auto cancelGuard = kj::defer([this, fulfillerPtr]() {
-    auto &q = _channel.impl->blockingWriteFulfillers;
+    auto& q = _channel.impl->blockingWriteFulfillers;
     for (auto it = q.begin(); it != q.end(); ++it) {
       if (it->get() == fulfillerPtr) {
         q.erase(it);
@@ -454,25 +615,26 @@ kj::Promise<void> Writer::write(WriteContext context) {
   });
 
   return paf.promise
-      .then([context, this]() mutable {
-        KJ_REQUIRE(!_closed, "promise_lambda: Writer already closed.", _closed);
-        auto v = context.getParams();
-        _channel.impl->buffer.push_front(capnp::clone(v));
-        KJ_LOG(INFO, "Writer::write: promise_lambda: wrote value to buffer");
-      })
-      .attach(kj::mv(cancelGuard));
+            .then([context, this]() mutable {
+              KJ_REQUIRE(!_closed, "promise_lambda: Writer already closed.", _closed);
+              auto v = context.getParams();
+              _channel.impl->buffer.push_front(capnp::clone(v));
+              _channel.impl->totalNoOfIpsReceived++;
+              KJ_LOG(INFO, "Writer::write: promise_lambda: wrote value to buffer");
+            }).then([this]() { return _channel.impl->sendStats(true); })
+            .attach(kj::mv(cancelGuard));
 }
 
 kj::Promise<void> Writer::writeIfSpace(WriteIfSpaceContext context) {
   KJ_REQUIRE(!_closed, "Writer already closed.", _closed);
 
   auto v = context.getParams();
-  auto &c = _channel;
-  auto &b = c.impl->buffer;
+  auto& c = _channel;
+  auto& b = c.impl->buffer;
 
   // don't accept any further writes if the channel is supposed to be closed (now or when the buffer is empty)
   if (c.impl->channelCanBeClosed || c.impl->channelShouldBeClosedOnEmptyBuffer) {
-    return kj::READY_NOW;
+    return c.impl->sendStats(true); //kj::READY_NOW;
   }
 
   // if we received a done, this writer can be removed
@@ -481,25 +643,27 @@ kj::Promise<void> Writer::writeIfSpace(WriteIfSpaceContext context) {
     // cout << "Writer::write: received done message id: " << id().cStr() << endl;
     c.closedWriter(id());
     context.getResults().setSuccess(true);
-    return kj::READY_NOW;
+    return c.impl->sendStats(true); //kj::READY_NOW;
   }
 
   // there's a reader waiting
   if (!c.impl->blockingReadFulfillers.empty()) {
     KJ_LOG(INFO, "Writer::writeIfSpace: unblock waiting reader");
-    auto &&brf = c.impl->blockingReadFulfillers.back();
+    auto&& brf = c.impl->blockingReadFulfillers.back();
     brf->fulfill(v);
+    c.impl->totalNoOfIpsReceived++;
     c.impl->blockingReadFulfillers.pop_back();
     context.getResults().setSuccess(true);
-    return kj::READY_NOW;
+    return c.impl->sendStats(true); //kj::READY_NOW;
   }
 
   // there space to store the message
   if (b.size() < c.impl->bufferSize) {
     KJ_LOG(INFO, "Writer::writeIfSpace: no reader waiting and space in buffer -> storing message");
     b.push_front(capnp::clone(v));
+    c.impl->totalNoOfIpsReceived++;
     context.getResults().setSuccess(true);
-    return kj::READY_NOW;
+    return c.impl->sendStats(true); //kj::READY_NOW;
   }
 
   KJ_LOG(INFO, "Writer::writeIfSpace: no reader waiting and no space in buffer -> return success=false");
@@ -512,3 +676,4 @@ kj::Promise<void> Writer::close(CloseContext context) {
   _channel.closedWriter(id());
   return kj::READY_NOW;
 }
+

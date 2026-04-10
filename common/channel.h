@@ -28,17 +28,16 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include "fbp.capnp.h"
 
 namespace mas::infrastructure::common {
-
 class Reader;
 class Writer;
 
 typedef mas::schema::fbp::Channel<capnp::AnyPointer> AnyPointerChannel;
 typedef typename AnyPointerChannel::Msg AnyPointerMsg;
 
-class Channel final : public AnyPointerChannel::Server
-{
+class Channel final : public AnyPointerChannel::Server {
 public:
-  Channel(kj::StringPtr name, kj::StringPtr description, uint64_t bufferSize, Restorer* restorer = nullptr);
+  Channel(kj::StringPtr name, kj::StringPtr description, uint64_t bufferSize,
+          kj::Timer& timer, Restorer* restorer = nullptr);
 
   ~Channel();
 
@@ -62,10 +61,14 @@ public:
 
   kj::Promise<void> close(CloseContext context) override;
 
+  kj::Promise<void> registerStatsCallback(RegisterStatsCallbackContext context) override;
+
+  kj::Promise<void> sendStats();
+
   AnyPointerChannel::Client getClient();
   void setClient(AnyPointerChannel::Client c);
 
-  bool canBeClosed() const;
+  kj::Promise<void> closeChannel();
 
   //mas::schema::common::Action::Client getUnregisterAction();
   //void setUnregisterAction(mas::schema::common::Action::Client unreg);
@@ -127,5 +130,4 @@ private:
   bool _closed{false};
   kj::String _id;
 };
-
 } // namespace mas::infrastructure::common
