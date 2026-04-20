@@ -59,7 +59,6 @@ struct Channel::Impl {
   bool channelCanBeClosed = false;
   kj::Own<kj::PromiseFulfiller<void>> closeChannelFulfiller;
   uint64_t totalNoOfIpsReceived{0};
-  bool weDoHaveImmediateStatsListeners{false};
 
   struct StatsCB {
     AnyPointerChannel::StatsCallback::Client callback;
@@ -68,6 +67,7 @@ struct Channel::Impl {
   };
 
   kj::HashMap<kj::String, StatsCB> statsCBs;
+  kj::HashMap<kj::String, StatsCB> immediateStatsCBs;
 
   class UnregStatsCallback : public AnyPointerChannel::StatsCallback::Unregister::Server {
     kj::HashMap<kj::String, StatsCB>& _statsCBs;
@@ -80,6 +80,7 @@ struct Channel::Impl {
     ~UnregStatsCallback() = default;
 
     kj::Promise<void> unreg(UnregContext context) override {
+      // KJ_DBG("UnregStatsCallback::unreg:", _id);
       _statsCBs.erase(_id);
       return kj::READY_NOW;
     }
@@ -89,8 +90,14 @@ struct Channel::Impl {
     AnyPointerChannel::StatsCallback::Client statsCB,
     uint32_t updateIntervalInMs) {
     auto id = kj::str(sole::uuid4().str());
-    if (updateIntervalInMs == 0) weDoHaveImmediateStatsListeners = true;
+    // KJ_DBG(updateIntervalInMs, id, "before statsCBs:", statsCBs.size(), immediateStatsCBs.size());
+    if (updateIntervalInMs == 0) {
+      immediateStatsCBs.insert(kj::str(id), Impl::StatsCB{statsCB, 0, 0});
+      // KJ_DBG("after immediateStatsCB:", immediateStatsCBs.size());
+      return kj::heap<UnregStatsCallback>(immediateStatsCBs, id);
+    }
     statsCBs.insert(kj::str(id), Impl::StatsCB{statsCB, updateIntervalInMs, updateIntervalInMs});
+    // KJ_DBG(updateIntervalInMs, id, "after statsCBs:", statsCBs.size());
     return kj::heap<UnregStatsCallback>(statsCBs, id);
   }
 
@@ -110,25 +117,17 @@ struct Channel::Impl {
   }
 
 
-  kj::Promise<void> sendStats(const bool sendNow = false) {
+  kj::Promise<void> sendStats() {
+    KJ_LOG(INFO, "sendStats", statsCBs.size());
+    bool listenersAttached = statsCBs.size() > 0;
+
     // no listeners for stats attached
-    if (statsCBs.size() == 0) {
+    if (!listenersAttached) {
+      KJ_LOG(INFO, "no listeners", statsCBs.size());
       return timer.afterDelay(1000 * kj::MILLISECONDS).then([this] { return sendStats(); });
     }
 
-    // we are supposed to send stats immediately
-    if (sendNow) {
-      // and we have some listeners who want that
-      if (weDoHaveImmediateStatsListeners) {
-        // continue down
-      } else {
-        // no listeners who want that
-        return kj::READY_NOW;
-      }
-    }
-
-    auto proms = kj::heapArrayBuilder<kj::Promise<void>>(statsCBs.size() +
-                                                         (sendNow ? 0 : 1));
+    auto proms = kj::heapArrayBuilder<kj::Promise<void>>(statsCBs.size() + 1);
     uint32_t minIntervalInMs = 0;
     // update due time
     for (auto& [key, statsCB] : statsCBs) {
@@ -136,34 +135,24 @@ struct Channel::Impl {
                           ? statsCB.updateIntervalInMs
                           : std::min(minIntervalInMs, statsCB.updateIntervalInMs);
     }
-    uint32_t minDueInMS = minIntervalInMs;
+    uint32_t minDueInMs = minIntervalInMs;
 
     for (auto& [id, statsCB] : statsCBs) {
-      // in timer mode don't send stats which are requested on every message
-      if (!sendNow && statsCB.updateIntervalInMs == 0) {
-        proms.add(kj::READY_NOW);
-        continue;
-      }
+      // KJ_DBG(id, statsCB.dueInMs, statsCB.updateIntervalInMs);
 
       auto req = statsCB.callback.statusRequest();
       auto stats = req.initStats();
-      stats.setNoOfWaitingWriters(blockingWriteFulfillers.size());
-      stats.setNoOfWaitingReaders(blockingReadFulfillers.size());
-      stats.setNoOfIpsInQueue(buffer.size());
-      stats.setTotalNoOfIpsReceived(totalNoOfIpsReceived);
-      stats.setUpdateIntervalInMs(statsCB.updateIntervalInMs);
-      const auto now = std::chrono::system_clock::now();
-      auto time = formatLocalTimeWithMillis(now);
-      stats.setTimestamp(time);
+      fillInStats(stats, statsCB.updateIntervalInMs);
 
       // count down the due time for the next update
       auto dueInMs = static_cast<int64_t>(statsCB.dueInMs) - minIntervalInMs;
       // send update for this listener
       if (dueInMs <= 0) {
         statsCB.dueInMs = statsCB.updateIntervalInMs;
+        // KJ_DBG("trying to send stats", statsCBs.size());
         proms.add(req.send().then([](auto&& res) {},
                                   [this, id = kj::str(id)](kj::Exception&& err) {
-                                    //KJ_DBG("Error sending stats.", err);
+                                    // KJ_DBG("Error sending stats.", err);
                                     statsCBs.erase(id);
                                   }));
       } else {
@@ -171,15 +160,51 @@ struct Channel::Impl {
         proms.add(kj::READY_NOW);
       }
 
-      minDueInMS = std::min(minDueInMS, statsCB.dueInMs);
+      minDueInMs = std::min(minDueInMs, statsCB.dueInMs);
     }
 
-    if (sendNow) return kj::joinPromises(proms.finish());
-
-    auto newDelay = std::min(minDueInMS, minIntervalInMs);
-    //KJ_DBG(newDelay, minIntervalInMs, sendNow);
+    auto newDelay = std::min(minDueInMs, minIntervalInMs);
+    // KJ_DBG(newDelay, minIntervalInMs);
     proms.add(timer.afterDelay(newDelay * kj::MILLISECONDS).then([] {}));
     return kj::joinPromises(proms.finish()).then([this] { return sendStats(); });
+  }
+
+  kj::Promise<void> sendImmediateStats() {
+    KJ_LOG(INFO, "sendImmediateStats", immediateStatsCBs.size());
+    if (immediateStatsCBs.size() > 0) {
+      auto proms = kj::heapArrayBuilder<kj::Promise<void>>(immediateStatsCBs.size());
+
+      for (auto& [id, statsCB] : immediateStatsCBs) {
+        // KJ_DBG("sendImmediateStats:", id, statsCB.dueInMs, statsCB.updateIntervalInMs);
+
+        auto req = statsCB.callback.statusRequest();
+        auto stats = req.initStats();
+        fillInStats(stats, statsCB.updateIntervalInMs);
+
+        // KJ_DBG("trying to send stats", immediateStatsCBs.size());
+        proms.add(req.send().then([](auto&& res) {},
+                                  [this, id = kj::str(id)](kj::Exception&& err) {
+                                    // KJ_DBG("Error sending immediate stats.", err);
+                                    immediateStatsCBs.erase(id);
+                                  }));
+      }
+
+      return kj::joinPromises(proms.finish());
+    }
+
+    KJ_LOG(INFO, "there are no immediate stats to send, ready now");
+    return kj::READY_NOW;
+  }
+
+  void fillInStats(AnyPointerChannel::StatsCallback::Stats::Builder stats, uint32_t updateIntervalInMs) {
+    stats.setNoOfWaitingWriters(blockingWriteFulfillers.size());
+    stats.setNoOfWaitingReaders(blockingReadFulfillers.size());
+    stats.setNoOfIpsInQueue(buffer.size());
+    stats.setTotalNoOfIpsReceived(totalNoOfIpsReceived);
+    stats.setUpdateIntervalInMs(updateIntervalInMs);
+    const auto now = std::chrono::system_clock::now();
+    auto time = formatLocalTimeWithMillis(now);
+    stats.setTimestamp(time);
   }
 
   Impl(Channel& self, mas::infrastructure::common::Restorer* restorer, kj::StringPtr name,
@@ -568,14 +593,15 @@ kj::Promise<void> Writer::write(WriteContext context) {
 
   // don't accept any further writes if the channel is supposed to be closed (now or when the buffer is empty)
   if (c.impl->channelCanBeClosed || c.impl->channelShouldBeClosedOnEmptyBuffer) {
-    return c.impl->sendStats(true); //kj::READY_NOW;
+    KJ_LOG(INFO, "Writer::write:", c.impl->channelCanBeClosed, c.impl->channelShouldBeClosedOnEmptyBuffer);
+    return c.impl->sendImmediateStats(); //kj::READY_NOW;
   }
 
   // if we received a done, this writer can be removed
   if (v.isDone()) {
     KJ_LOG(INFO, "Writer::write: received done -> remove writer", id());
     c.closedWriter(id());
-    return c.impl->sendStats(true); //kj::READY_NOW;
+    return c.impl->sendImmediateStats(); //kj::READY_NOW;
   }
 
   // there's a reader waiting
@@ -585,7 +611,7 @@ kj::Promise<void> Writer::write(WriteContext context) {
     brf->fulfill(v);
     c.impl->totalNoOfIpsReceived++;
     c.impl->blockingReadFulfillers.pop_back();
-    return c.impl->sendStats(true); //kj::READY_NOW;
+    return c.impl->sendImmediateStats(); //kj::READY_NOW;
   }
 
   // there space to store the message
@@ -593,7 +619,7 @@ kj::Promise<void> Writer::write(WriteContext context) {
     KJ_LOG(INFO, "Writer::write: no reader waiting and space in buffer -> storing message");
     b.push_front(capnp::clone(v));
     c.impl->totalNoOfIpsReceived++;
-    return c.impl->sendStats(true); //kj::READY_NOW;
+    return c.impl->sendImmediateStats(); //kj::READY_NOW;
   }
 
   // block until the buffer has space
@@ -621,7 +647,7 @@ kj::Promise<void> Writer::write(WriteContext context) {
               _channel.impl->buffer.push_front(capnp::clone(v));
               _channel.impl->totalNoOfIpsReceived++;
               KJ_LOG(INFO, "Writer::write: promise_lambda: wrote value to buffer");
-            }).then([this]() { return _channel.impl->sendStats(true); })
+            }).then([this]() { return _channel.impl->sendImmediateStats(); })
             .attach(kj::mv(cancelGuard));
 }
 
@@ -634,7 +660,8 @@ kj::Promise<void> Writer::writeIfSpace(WriteIfSpaceContext context) {
 
   // don't accept any further writes if the channel is supposed to be closed (now or when the buffer is empty)
   if (c.impl->channelCanBeClosed || c.impl->channelShouldBeClosedOnEmptyBuffer) {
-    return c.impl->sendStats(true); //kj::READY_NOW;
+    KJ_LOG(INFO, "Writer::writeIfSpace:", c.impl->channelCanBeClosed, c.impl->channelShouldBeClosedOnEmptyBuffer);
+    return c.impl->sendImmediateStats(); //kj::READY_NOW;
   }
 
   // if we received a done, this writer can be removed
@@ -643,7 +670,7 @@ kj::Promise<void> Writer::writeIfSpace(WriteIfSpaceContext context) {
     // cout << "Writer::write: received done message id: " << id().cStr() << endl;
     c.closedWriter(id());
     context.getResults().setSuccess(true);
-    return c.impl->sendStats(true); //kj::READY_NOW;
+    return c.impl->sendImmediateStats(); //kj::READY_NOW;
   }
 
   // there's a reader waiting
@@ -654,7 +681,7 @@ kj::Promise<void> Writer::writeIfSpace(WriteIfSpaceContext context) {
     c.impl->totalNoOfIpsReceived++;
     c.impl->blockingReadFulfillers.pop_back();
     context.getResults().setSuccess(true);
-    return c.impl->sendStats(true); //kj::READY_NOW;
+    return c.impl->sendImmediateStats(); //kj::READY_NOW;
   }
 
   // there space to store the message
@@ -663,7 +690,7 @@ kj::Promise<void> Writer::writeIfSpace(WriteIfSpaceContext context) {
     b.push_front(capnp::clone(v));
     c.impl->totalNoOfIpsReceived++;
     context.getResults().setSuccess(true);
-    return c.impl->sendStats(true); //kj::READY_NOW;
+    return c.impl->sendImmediateStats(); //kj::READY_NOW;
   }
 
   KJ_LOG(INFO, "Writer::writeIfSpace: no reader waiting and no space in buffer -> return success=false");

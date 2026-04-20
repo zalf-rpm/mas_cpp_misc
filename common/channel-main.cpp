@@ -202,12 +202,12 @@ namespace infrastructure {
         }
 
         // Run forever, accepting connections and handling requests.
-        kj::Timer& timer = ioContext.provider->getTimer();
         auto statsProms = kj::heapArrayBuilder<kj::Promise<void>>(channels.size());
         auto closeProms = kj::heapArrayBuilder<kj::Promise<void>>(channels.size());
         for (auto& cd : channels) {
           statsProms.add(cd.channel->sendStats());
           closeProms.add(cd.channel->closeChannel().then([this, &cd]() {
+            KJ_LOG(INFO, "removing channel");
             channels.remove(cd);
           }));
         }
@@ -215,6 +215,7 @@ namespace infrastructure {
           exclusiveJoin(kj::joinPromises(closeProms.finish())).
           wait(ioContext.waitScope);
 
+        // kj::Timer& timer = ioContext.provider->getTimer();
         // while (true) {
         //   kj::joinPromises(statsProms.finish()).wait(ioContext.waitScope);
         //   timer.afterDelay(exitTimeout * kj::SECONDS).wait(ioContext.waitScope);
