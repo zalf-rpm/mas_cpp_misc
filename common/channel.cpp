@@ -207,6 +207,24 @@ struct Channel::Impl {
     stats.setTimestamp(time);
   }
 
+  void unblockWaitingWriters(uint64_t slots) {
+    if (sendCloseOnEmptyBuffer || channelCanBeClosed || channelShouldBeClosedOnEmptyBuffer) return;
+
+    while (slots > 0 && !blockingWriteFulfillers.empty()) {
+      KJ_LOG(INFO, "Channel::Impl: unblock waiting writer");
+      auto&& bwf = blockingWriteFulfillers.back();
+      bwf->fulfill();
+      blockingWriteFulfillers.pop_back();
+      --slots;
+    }
+  }
+
+  void unblockWaitingWritersWithBufferSpace() {
+    const auto bufferedMsgs = static_cast<uint64_t>(buffer.size());
+    const auto freeSlots = bufferedMsgs < bufferSize ? bufferSize - bufferedMsgs : 0;
+    unblockWaitingWriters(freeSlots);
+  }
+
   Impl(Channel& self, mas::infrastructure::common::Restorer* restorer, kj::StringPtr name,
        kj::StringPtr description,
        uint64_t bufferSize,
@@ -310,7 +328,12 @@ void Channel::closedWriter(kj::StringPtr writerId) {
 
 kj::Promise<void> Channel::setBufferSize(SetBufferSizeContext context) {
   KJ_LOG(INFO, "Channel::setBufferSize: message received");
-  impl->bufferSize = context.getParams().getSize();
+  const auto oldBufferSize = impl->bufferSize;
+  const auto newBufferSize = std::max(static_cast<uint64_t>(1), context.getParams().getSize());
+  impl->bufferSize = newBufferSize;
+  if (newBufferSize > oldBufferSize) {
+    impl->unblockWaitingWriters(newBufferSize - oldBufferSize);
+  }
   return kj::READY_NOW;
 }
 
@@ -419,13 +442,7 @@ kj::Promise<void> Reader::read(ReadContext context) {
     context.getResults().setValue(v.get()->getValue());
     b.pop_back();
 
-    // unblock a writer unless we're about to close down
-    if (!c.impl->blockingWriteFulfillers.empty() && !c.impl->sendCloseOnEmptyBuffer) {
-      KJ_LOG(INFO, "Reader::read: unblock next writer");
-      auto&& bwf = c.impl->blockingWriteFulfillers.back();
-      bwf->fulfill();
-      c.impl->blockingWriteFulfillers.pop_back();
-    }
+    c.impl->unblockWaitingWritersWithBufferSpace();
 
     // check if the channel is supposed to be closed and just waiting for an empty buffer
     if (b.empty() && c.impl->channelShouldBeClosedOnEmptyBuffer) {
@@ -507,13 +524,7 @@ kj::Promise<void> Reader::readIfMsg(ReadIfMsgContext context) {
     context.getResults().setValue(v.get()->getValue());
     b.pop_back();
 
-    // unblock a writer unless we're about to close down
-    if (!c.impl->blockingWriteFulfillers.empty() && !c.impl->sendCloseOnEmptyBuffer) {
-      KJ_LOG(INFO, "Reader::readIfMsg: unblock next writer");
-      auto&& bwf = c.impl->blockingWriteFulfillers.back();
-      bwf->fulfill();
-      c.impl->blockingWriteFulfillers.pop_back();
-    }
+    c.impl->unblockWaitingWritersWithBufferSpace();
 
     // check if the channel is supposed to be closed and just waiting for an empty buffer
     if (b.empty() && c.impl->channelShouldBeClosedOnEmptyBuffer) {
@@ -703,4 +714,3 @@ kj::Promise<void> Writer::close(CloseContext context) {
   _channel.closedWriter(id());
   return kj::READY_NOW;
 }
-
