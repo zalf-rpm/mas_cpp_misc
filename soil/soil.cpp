@@ -43,7 +43,7 @@ using namespace Tools;
 using namespace Soil;
 using namespace json11;
 
-Errors Soil::noSetPwpFcSat(SoilParameters* sp) {
+Errors Soil::noSetPwpFcSat(SoilParameters* sp, int) {
   Errors errors;
   if (sp->vs_FieldCapacity < 0) errors.appendError("Field capacity not set!");
   if (sp->vs_Saturation < 0) errors.appendError("Saturation not set!");
@@ -416,7 +416,7 @@ double SoilParameters::sandAndClay2lambda(double sand, double clay) {
   return ::sandAndClay2lambda(sand, clay);
 }
 
-EResult<SoilPMs> Soil::createEqualSizedSoilPMs(const std::function<Errors(SoilParameters*)>& setPwpFcSat,
+EResult<SoilPMs> Soil::createEqualSizedSoilPMs(const std::function<Errors(SoilParameters*, int)>& setPwpFcSat,
                                                const J11Array& jsonSoilPMs, double layerThickness, int numberOfLayers) {
   Errors errors;
 
@@ -438,7 +438,7 @@ EResult<SoilPMs> Soil::createEqualSizedSoilPMs(const std::function<Errors(SoilPa
     if (spi + 1 == spsCount) repeatLayer = numberOfLayers - layerCount;
 
     for (int i = 1; i <= repeatLayer; i++) {
-      SoilParameters sps(setPwpFcSat);
+      SoilParameters sps([=](SoilParameters* sp) { return setPwpFcSat(sp, i); });
       auto es = sps.merge(sp);
       soilPMs.push_back(sps);
       if (es.failure()) {
@@ -844,60 +844,72 @@ EResult<FcSatPwp> fcSatPwpFromKA5textureClass(const std::string& pathToSoilDir,
   return res;
 }
 
-FcSatPwp fcSatPwpFromVanGenuchten(double sandContent,
-                                  double clayContent,
-                                  double stoneContent,
-                                  double soilBulkDensity,
-                                  double soilOrganicCarbon) {
+FcSatPwp fcSatPwpFromVanGenuchtenVereecken(double sandFrac,
+                                           double clayFrac,
+                                           double stoneFrac,
+                                           double bulkDensityKgPerM3,
+                                           double organicCarbonFrac) {
   FcSatPwp res;
-
-  //cout << "Permanent Wilting Point is calculated from van Genuchten parameters" << endl;
-  res.pwp = (0.015 + 0.5 * clayContent + 1.4 * soilOrganicCarbon) * (1.0 - stoneContent);
-
-  res.sat = (0.81 - 0.283 * (soilBulkDensity / 1000.0) + 0.1 * clayContent) * (1.0 - stoneContent);
-
-  //  cout << "Field capacity is calculated from van Genuchten parameters" << endl;
-  double thetaR = res.pwp;
-  double thetaS = res.sat;
-
-  double vanGenuchtenAlpha = exp(-2.486
-                                 + 2.5 * sandContent
-                                 - 35.1 * soilOrganicCarbon
-                                 - 2.617 * (soilBulkDensity / 1000.0)
-                                 - 2.3 * clayContent);
-
-  double vanGenuchtenM = 1.0;
-
-  double vanGenuchtenN = exp(0.053
-                             - 0.9 * sandContent
-                             - 1.3 * clayContent
-                             + 1.5 * (pow(sandContent, 2.0)));
+  res.pwp = (0.015 + 0.5 * clayFrac + 1.4 * organicCarbonFrac) * (1.0 - stoneFrac);
+  res.sat = (0.81 - 0.283 * (bulkDensityKgPerM3 / 1000.0) + 0.1 * clayFrac) * (1.0 - stoneFrac);
 
   //***** Van Genuchten retention curve to calculate volumetric water content at
   //***** moisture equivalent (Field capacity definition KA5)
-
-  double fieldCapacity_pF = 2.1;
-  if (sandContent > 0.48 && sandContent <= 0.9 && clayContent <=
+  double fc_pF = 2.1;
+  if (sandFrac > 0.48 && sandFrac <= 0.9 && clayFrac <=
       0.12)
-    fieldCapacity_pF = 2.1 - (0.476 * (sandContent - 0.48));
-  else if (sandContent > 0.9 && clayContent <= 0.05) fieldCapacity_pF = 1.9;
-  else if (clayContent > 0.45) fieldCapacity_pF = 2.5;
-  else if (clayContent > 0.30 && sandContent < 0.2) fieldCapacity_pF = 2.4;
-  else if (clayContent > 0.35) fieldCapacity_pF = 2.3;
-  else if (clayContent > 0.25 && sandContent < 0.1) fieldCapacity_pF = 2.3;
-  else if (clayContent > 0.17 && sandContent > 0.68) fieldCapacity_pF = 2.2;
-  else if (clayContent > 0.17 && sandContent < 0.33) fieldCapacity_pF = 2.2;
-  else if (clayContent > 0.08 && sandContent < 0.27) fieldCapacity_pF = 2.2;
-  else if (clayContent > 0.25 && sandContent < 0.25) fieldCapacity_pF = 2.2;
+    fc_pF = 2.1 - (0.476 * (sandFrac - 0.48));
+  else if (sandFrac > 0.9 && clayFrac <= 0.05) fc_pF = 1.9;
+  else if (clayFrac > 0.45) fc_pF = 2.5;
+  else if (clayFrac > 0.30 && sandFrac < 0.2) fc_pF = 2.4;
+  else if (clayFrac > 0.35) fc_pF = 2.3;
+  else if (clayFrac > 0.25 && sandFrac < 0.1) fc_pF = 2.3;
+  else if (clayFrac > 0.17 && sandFrac > 0.68) fc_pF = 2.2;
+  else if (clayFrac > 0.17 && sandFrac < 0.33) fc_pF = 2.2;
+  else if (clayFrac > 0.08 && sandFrac < 0.27) fc_pF = 2.2;
+  else if (clayFrac > 0.25 && sandFrac < 0.25) fc_pF = 2.2;
 
-  double matricHead = pow(10, fieldCapacity_pF);
+  double matricHead = pow(10, fc_pF);
 
-  res.fc = (thetaR + ((thetaS - thetaR) /
-                      (pow(1.0 + pow(vanGenuchtenAlpha * matricHead, vanGenuchtenN), vanGenuchtenM))))
-           * (1.0 - stoneContent);
+  auto vgps = calcVanGenuchtenVereeckenParams(res.pwp, res.sat, sandFrac, clayFrac,
+                                              bulkDensityKgPerM3, organicCarbonFrac, stoneFrac, matricHead);
+  res.fc = vgps.volumetricWaterContentAtMatricHead;
+  return res;
+}
+
+
+FcSatPwp fcSatPwpFromVanGenuchtenToth(bool isTopSoil,
+                                      double sandFrac,
+                                      double clayFrac,
+                                      double stoneFrac,
+                                      double bulkDensityKgPerM3,
+                                      double organicCarbonFrac) {
+  FcSatPwp res;
+
+  double sandContentPerc = sandFrac * 100;
+  double clayContentPerc = clayFrac * 100;
+
+  //***** Van Genuchten Toth retention curve to calculate volumetric water content at
+  //***** moisture equivalent, Field capacity and wilting point
+  // hFC = -100 for coarse soils
+  // hFC = -330 for medium/fine soils
+  double fcMatricHead = sandFrac > 0.60 ? -100 : -330;
+  auto fcVgps = calcVanGenuchtenTothParams(isTopSoil, sandFrac, clayFrac, bulkDensityKgPerM3, organicCarbonFrac,
+                                           stoneFrac, fcMatricHead);
+  res.sat = fcVgps.thetaS;
+  res.fc = fcVgps.volumetricWaterContentAtMatricHead;
+
+  double pwpMatricHead = -15000;
+  auto pwpVgps = calcVanGenuchtenTothParams(isTopSoil, sandFrac, clayFrac, bulkDensityKgPerM3, organicCarbonFrac,
+                                            stoneFrac, pwpMatricHead);
+  res.pwp = pwpVgps.volumetricWaterContentAtMatricHead;
+
+  // I need to set a safegard
+  if (res.pwp <= pwpVgps.thetaR) res.pwp = fcVgps.thetaR + 0.01;
 
   return res;
 }
+
 
 FcSatPwp fcSatPwpFromToth(double sandContent,
                           double clayContent,
@@ -921,10 +933,6 @@ FcSatPwp fcSatPwpFromToth(double sandContent,
             0.00003853 * sluf * ton + 0.00233 * ton * (1 / (oc + 1)) +
             0.0009498 * sluf * (1 / (oc + 1));
 
-  //res.sat = std::round(res.sat * 1000.0) / 1000.0;  // Maybe not necessary
-  //res.fc  = std::round(res.fc  * 1000.0) / 1000.0;
-  //res.pwp = std::round(res.pwp * 1000.0) / 1000.0;
-
   return res;
 }
 
@@ -947,20 +955,89 @@ Errors updateUnsetPwpFcSatFromKA5textureClass(const std::string& pathToSoilDir, 
 }
 }
 
-std::function<Errors(SoilParameters*)> Soil::getInitializedUpdateUnsetPwpFcSatfromKA5textureClassFunction(
+VanGenuchtenParams Soil::calcVanGenuchtenVereeckenParams(double pwp, double sat,
+                                                         double sandFrac, double clayFrac,
+                                                         double bulkDensityKgPerM3,
+                                                         double organicCarbonFrac,
+                                                         double stoneFrac, double matricHead) {
+  VanGenuchtenParams res;
+  res.thetaR = pwp;
+  res.thetaS = sat;
+  res.alpha = exp(-2.486
+                  + 2.5 * sandFrac
+                  - 35.1 * organicCarbonFrac
+                  - 2.617 * (bulkDensityKgPerM3 / 1000.0)
+                  - 2.3 * clayFrac);
+
+  res.m = 1.0;
+  res.n = exp(0.053
+              - 0.9 * sandFrac
+              - 1.3 * clayFrac
+              + 1.5 * (pow(sandFrac, 2.0)));
+
+  if (stoneFrac >= 0)
+    res.volumetricWaterContentAtMatricHead = (res.thetaR + ((res.thetaS - res.thetaR) /
+                                                            (pow(1.0 + pow(res.alpha * matricHead, res.n), res.m))))
+                                             * (1.0 - stoneFrac);
+  return res;
+}
+
+VanGenuchtenParams Soil::calcVanGenuchtenTothParams(bool isTopSoil,
+                                                    double sandFrac,
+                                                    double clayFrac,
+                                                    double bulkDensityKgPerM3,
+                                                    double organicCarbonFrac,
+                                                    double stoneFrac,
+                                                    double matricHead) {
+  VanGenuchtenParams res;
+  double sandContentPerc = sandFrac * 100;
+  double clayContentPerc = clayFrac * 100;
+  double siltContentPerc = 100 - sandContentPerc - clayContentPerc;
+  double soilOrganicCarbonPerc = organicCarbonFrac * 100;
+  double soilBulkDensityGPerCm3 = bulkDensityKgPerM3 / 1000;
+  double stoneContentPerc = stoneFrac * 100;
+
+  //cout << "PWP and FC are calculated with Toth-estimated van Genuchten parameters" << endl;
+  if (sandContentPerc >= 20) res.thetaR = 0.041;
+  else if (sandContentPerc < 20) res.thetaR = 0.179;
+  res.thetaS = 0.8308 - 0.28217 * soilBulkDensityGPerCm3 + 0.0002728 * clayContentPerc + 0.000187 * siltContentPerc;
+
+  res.alpha = pow(10, -0.43348
+                      - 0.41729 * soilBulkDensityGPerCm3
+                      - 0.04762 * soilOrganicCarbonPerc
+                      - 0.2181 * (isTopSoil ? 1 : 0)
+                      - 0.01581 * clayContentPerc
+                      - 0.01207 * siltContentPerc);
+  res.n = pow(10, 0.22236
+                  - 0.30189 * soilBulkDensityGPerCm3
+                  - 0.05558 * (isTopSoil ? 1 : 0)
+                  - 0.005306 * clayContentPerc
+                  - 0.003084 * siltContentPerc
+                  - 0.01072 * soilOrganicCarbonPerc) + 1;
+  res.m = 1 - 1 / res.n;
+
+  //***** Van Genuchten Toth retention curve to calculate volumetric water content at
+  //***** moisture equivalent, Field capacity and wilting point
+  res.volumetricWaterContentAtMatricHead = (res.thetaR + ((res.thetaS - res.thetaR) /
+                                                          (pow(1.0 + pow(res.alpha * abs(matricHead), res.n), res.m))))
+                                           * (1.0 - stoneContentPerc);
+  return res;
+}
+
+std::function<Errors(SoilParameters*, int)> Soil::getInitializedUpdateUnsetPwpFcSatfromKA5textureClassFunction(
   const std::string& pathToSoilDir) {
-  return [pathToSoilDir](SoilParameters* sp) {
+  return [pathToSoilDir](SoilParameters* sp, int) {
     return updateUnsetPwpFcSatFromKA5textureClass(pathToSoilDir, sp);
   };
 }
 
-Errors Soil::updateUnsetPwpFcSatFromVanGenuchten(SoilParameters* sp) {
+Errors Soil::updateUnsetPwpFcSatFromVanGenuchtenVereecken(SoilParameters* sp, int) {
   if (sp->vs_FieldCapacity < 0 || sp->vs_Saturation < 0 || sp->vs_PermanentWiltingPoint < 0) {
-    auto res = fcSatPwpFromVanGenuchten(sp->vs_SoilSandContent,
-                                        sp->vs_SoilClayContent,
-                                        sp->vs_SoilStoneContent,
-                                        sp->vs_SoilBulkDensity(),
-                                        sp->vs_SoilOrganicCarbon());
+    auto res = fcSatPwpFromVanGenuchtenVereecken(sp->vs_SoilSandContent,
+                                                 sp->vs_SoilClayContent,
+                                                 sp->vs_SoilStoneContent,
+                                                 sp->vs_SoilBulkDensity(),
+                                                 sp->vs_SoilOrganicCarbon());
     if (sp->vs_FieldCapacity < 0) sp->vs_FieldCapacity = res.fc;
     if (sp->vs_Saturation < 0) sp->vs_Saturation = res.sat;
     if (sp->vs_PermanentWiltingPoint < 0) sp->vs_PermanentWiltingPoint = res.pwp;
@@ -968,7 +1045,22 @@ Errors Soil::updateUnsetPwpFcSatFromVanGenuchten(SoilParameters* sp) {
   return {};
 }
 
-Errors Soil::updateUnsetPwpFcSatFromToth(SoilParameters* sp) {
+Errors Soil::updateUnsetPwpFcSatFromVanGenuchtenToth(SoilParameters* sp, int layerNo) {
+  if (sp->vs_FieldCapacity < 0 || sp->vs_Saturation < 0 || sp->vs_PermanentWiltingPoint < 0) {
+    auto res = fcSatPwpFromVanGenuchtenToth(layerNo <= 3,
+                                            sp->vs_SoilSandContent,
+                                            sp->vs_SoilClayContent,
+                                            sp->vs_SoilStoneContent,
+                                            sp->vs_SoilBulkDensity(),
+                                            sp->vs_SoilOrganicCarbon());
+    if (sp->vs_FieldCapacity < 0) sp->vs_FieldCapacity = res.fc;
+    if (sp->vs_Saturation < 0) sp->vs_Saturation = res.sat;
+    if (sp->vs_PermanentWiltingPoint < 0) sp->vs_PermanentWiltingPoint = res.pwp;
+  }
+  return {};
+}
+
+Errors Soil::updateUnsetPwpFcSatFromToth(SoilParameters* sp, int) {
   if (sp->vs_FieldCapacity < 0 || sp->vs_Saturation < 0 || sp->vs_PermanentWiltingPoint < 0) {
     auto res = fcSatPwpFromToth(sp->vs_SoilSandContent,
                                 sp->vs_SoilClayContent,

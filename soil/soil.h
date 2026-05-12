@@ -32,14 +32,14 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include "json11/json11-helper.h"
 
 namespace Soil {
-
 class SoilParameters;
-Tools::Errors noSetPwpFcSat(SoilParameters* sp);
+Tools::Errors noSetPwpFcSat(SoilParameters* sp, int = -1);
 
 //! @author Claas Nendel, Michael Berg 
-struct SoilParameters : public Tools::Json11Serializable
-{
-  explicit SoilParameters(std::function<Tools::Errors(SoilParameters*)> setPwpFcSat = noSetPwpFcSat);
+struct SoilParameters : public Tools::Json11Serializable {
+  explicit SoilParameters(std::function<Tools::Errors(SoilParameters*)> setPwpFcSat = [](SoilParameters* sp) {
+    return noSetPwpFcSat(sp);
+  });
 
   //explicit SoilParameters(json11::Json object);
 
@@ -89,7 +89,7 @@ struct SoilParameters : public Tools::Json11Serializable
   double vs_Soil_CN_Ratio{10.0};
   double vs_SoilMoisturePercentFC{100.0};
 
-  double thickness{0};  // layer thickness in m
+  double thickness{0}; // layer thickness in m
 private:
   double _vs_SoilRawDensity{-1.0}; //!< [kg m-3]
   double _vs_SoilBulkDensity{-1.0}; //!< [kg m-3]
@@ -118,15 +118,43 @@ const CapillaryRiseRates& readCapillaryRiseRates();
 typedef std::vector<SoilParameters> SoilPMs;
 typedef std::shared_ptr<SoilPMs> SoilPMsPtr;
 
-Tools::EResult<SoilPMs> createEqualSizedSoilPMs(const std::function<Tools::Errors(SoilParameters*)>& setPwpFcSat,
-  const Tools::J11Array& jsonSoilPMs, double layerThickness = 0.1, int numberOfLayers = 20);
+Tools::EResult<SoilPMs> createEqualSizedSoilPMs(const std::function<Tools::Errors(SoilParameters*, int)>& setPwpFcSat,
+                                                const Tools::J11Array& jsonSoilPMs, double layerThickness = 0.1,
+                                                int numberOfLayers = 20);
 
-Tools::EResult<SoilPMs> createSoilPMs(const std::function<Tools::Errors(SoilParameters*)>& setPwpFcSat, const Tools::J11Array &jsonSoilPMs);
+Tools::EResult<SoilPMs> createSoilPMs(const std::function<Tools::Errors(SoilParameters*)>& setPwpFcSat,
+                                      const Tools::J11Array& jsonSoilPMs);
 
-std::function<Tools::Errors(SoilParameters*)> getInitializedUpdateUnsetPwpFcSatfromKA5textureClassFunction(const std::string& pathToSoilDir);
+std::function<Tools::Errors(SoilParameters*, int)> getInitializedUpdateUnsetPwpFcSatfromKA5textureClassFunction(
+  const std::string& pathToSoilDir);
 
-Tools::Errors updateUnsetPwpFcSatFromVanGenuchten(SoilParameters* sp);
+struct VanGenuchtenParams {
+  double thetaR{0};
+  double thetaS{0};
+  double alpha{0};
+  double m{0};
+  double n{0};
+  double volumetricWaterContentAtMatricHead{-1};
+};
 
-Tools::Errors updateUnsetPwpFcSatFromToth(SoilParameters* sp);
+// calc volumetricWaterContentAtMatricHead if stone fraction and matric head are provided
+VanGenuchtenParams calcVanGenuchtenVereeckenParams(double pwp, double sat,
+                                                   double sandFrac, double clayFrac,
+                                                   double bulkDensityKgPerM3,
+                                                   double organicCarbonFrac,
+                                                   double stoneFrac = -1, double matricHead = -1);
 
+VanGenuchtenParams calcVanGenuchtenTothParams(bool isTopSoil,
+                                              double sandFrac,
+                                              double clayFrac,
+                                              double bulkDensityKgPerM3,
+                                              double organicCarbonFrac,
+                                              double stoneFrac = -1,
+                                              double matricHead = -1);
+
+Tools::Errors updateUnsetPwpFcSatFromVanGenuchtenVereecken(SoilParameters* sp, int layerNo = -1);
+
+Tools::Errors updateUnsetPwpFcSatFromVanGenuchtenToth(SoilParameters* sp, int layerNo = 0);
+
+Tools::Errors updateUnsetPwpFcSatFromToth(SoilParameters* sp, int layerNo = -1);
 } // namespace Soil
