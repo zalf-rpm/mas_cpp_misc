@@ -886,9 +886,6 @@ FcSatPwp fcSatPwpFromVanGenuchtenToth(bool isTopSoil,
                                       double organicCarbonFrac) {
   FcSatPwp res;
 
-  double sandContentPerc = sandFrac * 100;
-  double clayContentPerc = clayFrac * 100;
-
   //***** Van Genuchten Toth retention curve to calculate volumetric water content at
   //***** moisture equivalent, Field capacity and wilting point
   // hFC = -100 for coarse soils
@@ -995,7 +992,6 @@ VanGenuchtenParams Soil::calcVanGenuchtenTothParams(bool isTopSoil,
   double siltContentPerc = 100 - sandContentPerc - clayContentPerc;
   double soilOrganicCarbonPerc = organicCarbonFrac * 100;
   double soilBulkDensityGPerCm3 = bulkDensityKgPerM3 / 1000;
-  double stoneContentPerc = stoneFrac * 100;
 
   //cout << "PWP and FC are calculated with Toth-estimated van Genuchten parameters" << endl;
   if (sandContentPerc >= 20) res.thetaR = 0.041;
@@ -1020,7 +1016,7 @@ VanGenuchtenParams Soil::calcVanGenuchtenTothParams(bool isTopSoil,
   //***** moisture equivalent, Field capacity and wilting point
   res.volumetricWaterContentAtMatricHead = (res.thetaR + ((res.thetaS - res.thetaR) /
                                                           (pow(1.0 + pow(res.alpha * abs(matricHead), res.n), res.m))))
-                                           * (1.0 - stoneContentPerc);
+                                           * (1.0 - stoneFrac);
   return res;
 }
 
