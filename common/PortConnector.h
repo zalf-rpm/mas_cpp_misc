@@ -37,14 +37,17 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include "rpc-connection-manager.h"
 
 namespace mas::infrastructure::common {
-
 class PortConnector {
 public:
-  PortConnector(ConnectionManager &conMan, std::map<int, kj::StringPtr> inPorts, std::map<int, kj::StringPtr> outPorts);
+  enum PortType { IN, OUT, ARRAY_OUT };
+
+  PortConnector(ConnectionManager& conMan, std::map<int, kj::StringPtr> inPorts, std::map<int, kj::StringPtr> outPorts);
 
   ~PortConnector() = default;
 
   void connectFromPortInfos(kj::StringPtr portInfosReaderSR);
+
+  void connectToSrStr(kj::StringPtr portName, kj::StringPtr srStr, PortType portType);
 
   typedef mas::schema::fbp::IP IP;
   typedef mas::schema::fbp::Channel<IP> Channel;
@@ -59,11 +62,11 @@ public:
   void closeOutPorts();
 
   struct Impl;
+
 private:
   kj::Own<Impl> impl;
 };
 
 KJ_DECLARE_NON_POLYMORPHIC(PortConnector::Impl)
-
 } // namespace mas::infrastructure::common
 

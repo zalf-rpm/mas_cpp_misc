@@ -36,7 +36,7 @@ using namespace std;
 using namespace mas::infrastructure::common;
 
 struct PortConnector::Impl {
-  PortConnector &self;
+  PortConnector& self;
   kj::HashMap<int, Channel::ChanReader::Client> inPortCaps;
   kj::HashMap<kj::String, int> inPortName2Id;
   //kj::HashMap<int, kj::String> inPortSRs;
@@ -48,14 +48,15 @@ struct PortConnector::Impl {
   //kj::HashMap<int, kj::String> outPortSRs;
   kj::HashMap<int, bool> outPortsConnected;
   kj::HashMap<int, kj::Vector<bool>> outArrayPortsConnected;
-  ConnectionManager &conMan;
+  ConnectionManager& conMan;
   kj::Own<kj::PromiseFulfiller<void>> necessaryPortsConnected;
   toml::table tomlConfig;
 
-  Impl(PortConnector &self, ConnectionManager& conMan,
-    std::map<int, kj::StringPtr> inPorts,
-    std::map<int, kj::StringPtr> outPorts)
-    : self(self), conMan(conMan) {
+  Impl(PortConnector& self, ConnectionManager& conMan,
+       std::map<int, kj::StringPtr> inPorts,
+       std::map<int, kj::StringPtr> outPorts)
+  : self(self)
+  , conMan(conMan) {
     for (auto [portId, portName] : inPorts) {
       this->inPortCaps.insert(portId, nullptr);
       this->inPortName2Id.insert(kj::str(portName), portId);
@@ -85,7 +86,9 @@ struct PortConnector::Impl {
   void connectFromPortInfos(kj::StringPtr portInfosReaderSR) {
     typedef mas::schema::fbp::Channel<mas::schema::fbp::PortInfos>::ChanReader PIReader;
     auto reader = conMan.tryConnectB(portInfosReaderSR).castAs<PIReader>();
+    KJ_LOG(INFO, "connected to portInfosReaderSR");
     auto msg = reader.readRequest().send().wait(conMan.ioContext().waitScope);
+    KJ_LOG(INFO, "received msg from portInfosReaderSR");
     if (msg.isDone()) {
       return;
     } else if (msg.hasValue()) {
@@ -94,20 +97,23 @@ struct PortConnector::Impl {
           if (nameAndSr.hasName() && nameAndSr.hasSr()) {
             auto key = nameAndSr.getName();
             KJ_IF_MAYBE(portId, inPortName2Id.find(key)) {
+              KJ_LOG(INFO, "connecting to IN port", key, nameAndSr.getSr(), portId);
               connectToSR(*portId, nameAndSr.getSr(), IN);
             }
           }
         }
       }
-      if (msg.getValue().hasOutPorts()){
+      if (msg.getValue().hasOutPorts()) {
         for (auto nameAndSr : msg.getValue().getOutPorts()) {
           KJ_IF_MAYBE(portId, outPortName2Id.find(nameAndSr.getName())) {
-            if (nameAndSr.hasName()){
+            if (nameAndSr.hasName()) {
               if (nameAndSr.hasSrs()) {
                 for (auto sr : nameAndSr.getSrs()) {
+                  KJ_LOG(INFO, "connecting to ARRAY_OUT port", nameAndSr.getName(), sr, portId);
                   connectToSR(*portId, sr, ARRAY_OUT);
                 }
               } else if (nameAndSr.hasSr()) {
+                KJ_LOG(INFO, "connecting to OUT port", nameAndSr.getName(), nameAndSr.getSr(), portId);
                 connectToSR(*portId, nameAndSr.getSr(), OUT);
               }
             }
@@ -117,7 +123,7 @@ struct PortConnector::Impl {
     }
   }
 
-  enum PortType { IN, OUT, ARRAY_OUT };
+
   void connectToSR(int portId, schema::persistence::SturdyRef::Reader sr, PortType portType) {
     switch (portType) {
     case IN: {
@@ -126,13 +132,44 @@ struct PortConnector::Impl {
       inPortsConnected.upsert(portId, true);
       break;
     }
-    case OUT:{
+    case OUT: {
       auto writer = conMan.tryConnectB(sr).castAs<Channel::ChanWriter>();
       outPortCaps.upsert(portId, kj::mv(writer));
       outPortsConnected.upsert(portId, true);
       break;
     }
-    case ARRAY_OUT:{
+    case ARRAY_OUT: {
+      auto writer = conMan.tryConnectB(sr).castAs<Channel::ChanWriter>();
+      KJ_IF_MAYBE(cap_vec, outArrayPortCaps.find(portId)) {
+        cap_vec->add(kj::mv(writer));
+      } else {
+        kj::Vector<Channel::ChanWriter::Client> vec;
+        vec.add(kj::mv(writer));
+        outArrayPortCaps.insert(portId, kj::mv(vec));
+        kj::Vector<bool> vec2;
+        vec2.add(true);
+        outArrayPortsConnected.upsert(portId, kj::mv(vec2));
+      }
+      break;
+    }
+    }
+  }
+
+  void connectToSrStr(int portId, kj::StringPtr sr, PortType portType) {
+    switch (portType) {
+    case IN: {
+      auto reader = conMan.tryConnectB(sr).castAs<Channel::ChanReader>();
+      inPortCaps.upsert(portId, kj::mv(reader));
+      inPortsConnected.upsert(portId, true);
+      break;
+    }
+    case OUT: {
+      auto writer = conMan.tryConnectB(sr).castAs<Channel::ChanWriter>();
+      outPortCaps.upsert(portId, kj::mv(writer));
+      outPortsConnected.upsert(portId, true);
+      break;
+    }
+    case ARRAY_OUT: {
       auto writer = conMan.tryConnectB(sr).castAs<Channel::ChanWriter>();
       KJ_IF_MAYBE(cap_vec, outArrayPortCaps.find(portId)) {
         cap_vec->add(kj::mv(writer));
@@ -150,12 +187,30 @@ struct PortConnector::Impl {
   }
 };
 
-PortConnector::PortConnector(ConnectionManager &conMan, std::map<int, kj::StringPtr> inPorts,
-  std::map<int, kj::StringPtr> outPorts)
-  : impl(kj::heap<Impl>(*this, conMan, inPorts, outPorts)) {}
+PortConnector::PortConnector(ConnectionManager& conMan, std::map<int, kj::StringPtr> inPorts,
+                             std::map<int, kj::StringPtr> outPorts)
+: impl(kj::heap<Impl>(*this, conMan, inPorts, outPorts)) {}
 
 void PortConnector::connectFromPortInfos(kj::StringPtr portInfosReaderSR) {
   impl->connectFromPortInfos(portInfosReaderSR);
+}
+
+void PortConnector::connectToSrStr(kj::StringPtr portName, kj::StringPtr srStr, PortType portType) {
+  switch (portType) {
+  case IN:
+    KJ_IF_MAYBE(portId, impl->inPortName2Id.find(portName)) {
+      KJ_LOG(INFO, "connecting to IN port", portName, srStr, portId);
+      impl->connectToSrStr(*portId, srStr, portType);
+    }
+    break;
+  case OUT:
+    KJ_IF_MAYBE(portId, impl->outPortName2Id.find(portName)) {
+      KJ_LOG(INFO, "connecting to OUT port", portName, srStr, portId);
+      impl->connectToSrStr(*portId, srStr, portType);
+    }
+    break;
+  case ARRAY_OUT: break;
+  }
 }
 
 PortConnector::Channel::ChanReader::Client PortConnector::in(int inPortId) {
@@ -210,7 +265,7 @@ void PortConnector::closeOutPorts() {
   for (auto& [portId, vecOfWriters] : impl->outArrayPortCaps) {
     int i = 0;
     auto name = impl->outPortId2Name.find(portId);
-    for (auto &writer : vecOfWriters) {
+    for (auto& writer : vecOfWriters) {
       if (isArrOutConnected(portId, i)) {
         KJ_LOG(INFO, kj::str("closing ", name.orDefault(kj::str(portId)), " OUT port"));
         writer.closeRequest().send().wait(impl->conMan.ioContext().waitScope);

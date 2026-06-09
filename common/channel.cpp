@@ -118,12 +118,12 @@ struct Channel::Impl {
 
 
   kj::Promise<void> sendStats() {
-    KJ_LOG(INFO, "sendStats", statsCBs.size());
+    //KJ_LOG(INFO, "sendStats", statsCBs.size());
     bool listenersAttached = statsCBs.size() > 0;
 
     // no listeners for stats attached
     if (!listenersAttached) {
-      KJ_LOG(INFO, "no listeners", statsCBs.size());
+      //KJ_LOG(INFO, "no listeners", statsCBs.size());
       return timer.afterDelay(1000 * kj::MILLISECONDS).then([this] { return sendStats(); });
     }
 
