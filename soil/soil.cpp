@@ -442,7 +442,7 @@ EResult<SoilPMs> Soil::createEqualSizedSoilPMs(const std::function<Errors(SoilPa
       auto es = sps.merge(sp);
       soilPMs.push_back(sps);
       if (es.failure()) {
-        errors.appendError(kj::str("Layer ", i, ":").cStr());
+        errors.appendError(kj::str("Config-layer:", spi + 1, "Monica-layer:", layerCount + i, ":").cStr());
         errors.append(es);
       }
     }
