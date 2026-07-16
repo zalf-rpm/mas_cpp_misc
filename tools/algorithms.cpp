@@ -280,6 +280,7 @@ double Tools::hourlyVaporPressureDeficit(double hourlyTemperature, double dailyT
 }
 
 double Tools::solarDeclination(int dayOfTheYear) {
+  // unknown source; seems like sin(x)=-cos(x+0.5π) with 0.5π=2π/365*365/4=2π/365*91.25 applied on 0.4093 * sin(2π/365*​(doy−81)) (eqivalent degrees version: 23.45 * sin(360/365*​(doy+284)))
   return (-0.4093 * cos(2.0 * M_PI * (double(dayOfTheYear) + 10.0) / 365.0));
 }
 
@@ -290,7 +291,7 @@ double Tools::solarElevation(int hour, double latitude, int dayOfTheYear) {
   double dA = sin(dDecl) * sin(lat_rad);
   double dB = cos(dDecl) * cos(lat_rad);
   double dHa = M_PI * (double(hour) - 12) / 12;
-  return (asin(dA + dB * cos(dHa))); // can be -ve
+  return (asin(bound(-1., dA + dB * cos(dHa), 1.))); // can be -ve
 }
 
 double Tools::hourlyRad(double globrad, double lat, int doy, int h) {
@@ -300,13 +301,130 @@ double Tools::hourlyRad(double globrad, double lat, int doy, int h) {
   double dA = sin(dDecl) * sin(lat_rad);
   double dB = cos(dDecl) * cos(lat_rad);
   double dAoB = dA / dB;
-  double dPhi = (M_PI * globrad / 86400.0) / (dA * acos(-dAoB) + dB * sqrt(1 - dAoB * dAoB));
+  double dPhi = (M_PI * globrad / 86400.0) / (dA * acos(bound(-1., -dAoB, 1.)) + dB * sqrt(1 - dAoB * dAoB));
   double dCoefA = -dB * dPhi;
   double dCoefB = dA * dPhi;
 
   double dTotrad = std::max((dCoefA * cos(M_PI * h / 12.0) + dCoefB) * 3600, 0.0);
 
   return dTotrad;
+}
+
+double Tools::solarDeclinationFAO(double doy, double days_in_year) {
+  return 0.409 * sin(2.0 * M_PI * doy/days_in_year - 1.39);
+}
+
+Tools::solar_position_result Tools::solar_position(double lat, double lon, int doy, double t, double UTC, bool atm_refract_cor) {
+  double lat_rad = lat * M_PI/180.0;
+
+  // leap year correction (would additionaly require the input variable y (=year); not strictly neede here and can be neglected for now)
+  // bool is_leapyear = ((y % 4 == 0) && (y % 100 != 0)) || (y % 400 == 0);
+  // double days_in_year = is_leapyear ? 366.0 : 365.0;
+
+  double days_in_year = 365.0;
+
+  // declination
+  double fract = 2.0 * M_PI / days_in_year;
+  double n = fract * (doy - 1. + (t - 12.) / 24.); // double n = 2.0 * M_PI * (doy - 1. + (t-12.)/24.) / days_in_year;
+  // double dDecl = 0.409 * sin(fract * doy - 1.39); // = solarDeclinationFAO(doy, days_in_year);
+  //* NOAA solar calculator based approximation for solar declination (already used in Schmidt et al. 2019 http://dx.doi.org/10.3390/agriculture9010006 in the MONICA context)
+  // should be slightly more accurate than solarDeclinationFAO(doy, days_in_year) or solarDeclination(doy)
+  // double dDecl = 0.006918 - 0.399912 * cos(n) +
+  //                0.070257 * sin(n) - 0.006758 * cos(2.0 * n) +
+  //                0.000907 * sin(2.0 * n) - 0.002697 * cos(3.0 * n) +
+  //                0.00148 * sin(3.0 * n);
+  // optimization of NOAA solar calculator based approximation
+  double sinn = sin(n);
+  double cosn = cos(n);
+  double powsinn2 = sinn * sinn;
+  double powcosn2 = cosn * cosn;
+  double sin2n = 2 * sinn * cosn;                  // double-angle formula sin
+  double cos2n = powcosn2 - powsinn2;              // double-angle formula cos
+  double sin3n = sinn * (3 * powcosn2 - powsinn2); // triple-angle formula sin
+  double cos3n = cosn * (powcosn2 - 3 * powsinn2); // triple-angle formula cos
+  double dDecl = 0.006918 - 0.399912 * cosn +
+                 0.070257 * sinn - 0.006758 * cos2n +
+                 0.000907 * sin2n - 0.002697 * cos3n +
+                 0.00148 * sin3n;
+  // */
+
+  double lon_offset = lon - UTC * 15.0;
+  if (lon_offset < -180.) {
+    lon_offset += 360.;
+  }
+  if (lon_offset >= 180.) {
+    lon_offset -= 360.;
+  }
+
+  double EoT = 229.18 * (
+    0.000075 + 0.001868 * cos(n) -
+    0.032077 * sin(n) - 0.014615 * cos(2.0 * n) -
+    0.040849 * sin(2.0 * n)
+  );  // Equation of Time [minutes]
+
+  double tsol = t + (4.0 * lon_offset + EoT) / 60.0;  // t + lon_offset/15 + Eot/60
+  tsol = std::fmod(tsol, 24.0);
+  if (tsol < 0.0) {
+    tsol += 24.0;
+  }
+
+  double dHa = M_PI/12.0 * (tsol - 12.0);  // hour angle = 15° * (solarTime - 12h)
+
+  // solar elevation
+  double dA = sin(dDecl) * sin(lat_rad);
+  double dB = cos(dDecl) * cos(lat_rad);
+  double el_rad = asin(bound(-1., dA + dB * cos(dHa), 1.));
+
+  // solar azimuth, conventional (calculate before refraction correction!)
+  double az_rad;
+  double denom = cos(lat_rad) * cos(el_rad);
+  if (std::abs(denom) < 1e-12) {  // denominator from azimuth calculation; could become zero-ish at 90° solar elevation (or close to the North pole & South pole)
+    az_rad = std::numeric_limits<double>::quiet_NaN();  // safeguard to avoid numerical explosion
+  } else {  // normal cases
+    double cosaz = (sin(lat_rad) * sin(el_rad) - sin(dDecl)) / denom;  // (sin(lat_rad) * cos(zenith) - sin(dDecl)) / (cos(lat_rad)*sin(zenith));
+    az_rad = acos(bound(-1., cosaz, 1.));
+    if (dHa > 0) {
+      az_rad = fmod(az_rad + M_PI, 2.0 * M_PI);       // (acos(cosaz) * 180./M_PI + 180.) % 360.;
+    } else {
+      az_rad = fmod(3.0 * M_PI - az_rad, 2.0 * M_PI); // (540. - acos(cosaz) * 180./M_PI) % 360.;
+    }
+  }
+
+  // // shift to positive azimuth angles only
+  // if (az_rad < 0.0) {
+  //   az_rad += 2.0 * M_PI;
+  // }
+
+  // // modern alternative solar azimuth formula, see Zhang et al. 2021 https://doi.org/10.1016/j.renene.2021.03.047
+  // double lon_s = -15.*(t_gmt - 12 + EoT/60.);
+  // double Sx = cos(dDecl) * sin((lon_s - lon) * M_PI/180.);
+  // double Sy = cos(lat_rad) * sin(dDecl) - sin(lat_rad) * cos(dDecl) * cos((lon_s - lon) * M_PI/180.);
+  // double az_rad = atan2(Sx, Sy);
+
+  // solar elevation incluing atmospheric refraction correction (see based on NOAA solar calculator https://gml.noaa.gov/grad/solcalc/calcdetails.html)
+  if (atm_refract_cor) {
+    double el_deg = el_rad * 180.0/M_PI;
+    // if (el_deg > 85.) {
+    //   ; // el_deg += 0.;
+    if (el_deg > 5.) {  // } else if (el_deg > 5.) {
+      // el_deg += (58.1 / tan(el_rad) - 0.07 / pow(tan(el_rad), 3) + 0.000086 / pow(tan(el_rad), 5)) / 3600;
+      // optimization
+      double tanel = tan(el_rad); // optimization
+      double powtanel2 = tanel * tanel;
+      double powtanel3 = tanel * powtanel2;
+      double powtanel5 = powtanel2 * powtanel3;
+      el_deg += (58.1 / tanel - 0.07 / powtanel3 + 0.000086 / powtanel5) / 3600;
+    } else if (el_deg > -0.575) {
+      el_deg += (1735 + el_deg * (-518.2 + el_deg * (103.4 + el_deg * (-12.79 + el_deg * 0.711)))) / 3600;
+    } else {
+      // el_deg += (-20.772 / tan(el_rad)) / 3600;
+      double tanel = tan(el_rad); // optimization
+      el_deg += (-20.772 / tanel) / 3600; // optimization
+    }
+    el_rad = el_deg * M_PI/180.;
+  }
+
+  return {el_rad, az_rad};
 }
 
 HistogramData Tools::histogramDataByStepSize(const vector<double>& ys,
