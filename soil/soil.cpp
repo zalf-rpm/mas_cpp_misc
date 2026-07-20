@@ -138,7 +138,7 @@ Errors SoilParameters::merge(json11::Json j) {
     else es.append(res);
   }
 
-  if (vs_SoilClayContent > 0 && vs_SoilSandContent > 0 && vs_SoilTexture.empty()) {
+  if (vs_SoilClayContent >= 0 && vs_SoilSandContent >= 0 && vs_SoilTexture.empty()) {
     vs_SoilTexture = sandAndClay2KA5texture(vs_SoilSandContent, vs_SoilClayContent);
   }
 
@@ -1069,5 +1069,3 @@ Errors Soil::updateUnsetPwpFcSatFromToth(SoilParameters* sp, int) {
   }
   return {};
 }
-
-
