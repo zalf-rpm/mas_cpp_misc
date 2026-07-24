@@ -78,6 +78,24 @@ Errors Json11Serializable::merge(json11::Json j) {
 }
 
 
+Errors Tools::defaultMerge(json11::Json j, const std::function<Errors(json11::Json)>& merge) {
+  Errors res;
+
+  if (j["DEFAULT"].is_object()) {
+    res = merge(j["DEFAULT"]);
+  }
+  if (j["="].is_object()) {
+    res = merge(j["="]);
+  }
+
+  return res;
+}
+
+json11::Json Tools::defaultToJson() { return json11::Json(); }
+
+std::string Tools::defaultToString(const json11::Json& asJson) { return asJson.dump(); }
+
+
 void Tools::set_double_vectorD(std::vector<double> &var,
                                const json11::Json &j,
                                const std::string &key,

@@ -49,6 +49,20 @@ public:
   virtual std::string toString() const { return to_json().dump(); }
 };
 
+//! Free-function equivalents of Json11Serializable's default behavior, for plain-struct types
+//! that don't (or no longer) inherit from Json11Serializable.
+
+//! Default merge(): if j wraps its actual content under a "DEFAULT" or "=" key, unwrap and
+//! re-merge using the type's own merge function.
+Errors defaultMerge(json11::Json j, const std::function<Errors(json11::Json)>& merge);
+
+//! Default to_json(): a type that doesn't provide its own json11 representation gets this
+//! placeholder instead.
+json11::Json defaultToJson();
+
+//! Default toString(): dumps an already produced json11 value.
+std::string defaultToString(const json11::Json& asJson);
+
 typedef json11::Json::array J11Array;
 typedef json11::Json::object J11Object;
 
