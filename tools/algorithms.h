@@ -86,6 +86,8 @@ std::string trim(const std::string& s,
 
 /*!
 * keep a value in the given border [lower, upper]
+* 
+* FS: How does bound(lower, x, upper) differ from std::clamp(x, lower, upper)
 * @param lower the lower border
 * @param value
 * @param upper the upper border
@@ -106,6 +108,14 @@ double cloudAmount2globalRadiation(int dayOfYear,
 
 double hourlyVaporPressureDeficit(double hourlyTemperature, double dailyTmin, double dailyTavg, double dailyTmax);
 
+/**
+ * @brief solar declination calculation
+ * 
+ * unknown source
+ * 
+ * @param dayOfTheYear 1...365
+ * @return double dDecl
+ */
 double solarDeclination(int dayOfTheYear);
 
 double solarElevation(int hour, double latitude, int dayOfTheYear);
@@ -115,6 +125,39 @@ double hourlyT(double tmin, double tmax, int h, int sunrise_h);
 
 //returns hourly global radiation
 double hourlyRad(double globrad, double lat, int doy, int h);
+
+/**
+ * @brief solar declination calculation, FAO Irrigation and drainage paper 56 style (see https://www.fao.org/4/x0490e/x0490e07.htm#solar%20radiation)
+ * 
+ * @param doy day of year [number of the day in the year between 1 (1 January) and 365 or 366 (31 December)]
+ * @param days_in_year 365.0 or 366.0
+ * @return double dDecl
+ */
+double solarDeclinationFAO(double doy, double days_in_year=365.0);
+
+struct solar_position_result {
+  double el_rad;  // solar elevation angle [radians]
+  double az_rad;  // solar azimuth angle [radians]
+};
+/**
+ * @brief solar position algorithm
+ *
+ * This algorithm is designed to work with real world time (as opposed to the local solar time) and therefore requires longitude and UTC timezone information as additional inputs.
+ * Mostly based on the approach used in Schmidt et al. 2019: Modeling Yields Response to Shading in the Field-to-Forest Transition Zones in Heterogeneous Landscapes http://dx.doi.org/10.3390/agriculture9010006
+ * which is based based on NOAA (National Oceanic and Atmospheric Administration) Solar Calculator (ESRL Global Monitoring Division—Global Radiation Group https://www.esrl.noaa.gov/gmd/grad/solcalc/index.html).
+ * -> so this solar position algorithm has already been used in the MONICA context (even though not implemented directly in the MONICA code)
+ *
+ * @param lat geographic latitude [decimal degrees]
+ * @param lon geographic longitude [decimal degrees]
+ * @param doy day of year [number of the day in the year between 1 (1 January) and 365 or 366 (31 December)]
+ * @param t   real world time [hours, decimal]
+ * @param UTC UTC time offset [hours, -12.0 ... +14.0]. Apparently cases like UTC+9:30 (should be entered as 9.5) or UTC+12:45 (should be entered as 12.75) exist.
+ *            If needed, make sure to take into account daylight savings time into the UTC time offset entered here as well.
+ *            In case the UTC offset is unknown, the theoretical time of the cenrtral meridian can be estimated like this: static_cast<int>(std::floor(lon / 15.0 + 0.5)). However, that may be off by quite a bit for real world local time.
+ * @return solar_position_result
+ * @author FS
+ */
+solar_position_result solar_position(double lat, double lon, int doy, double t, double UTC, bool atm_refract_cor=false);
 
 /*!
 * capitalize a copy of the input
@@ -687,6 +730,7 @@ std::pair<typename Collection::value_type, typename Collection::value_type> Tool
 
 template <typename T>
 T Tools::bound(T lower, T value, T upper) {
+  // assert(lower <= upper);
   if (value < lower) return lower;
   if (value > upper) return upper;
   return value;
