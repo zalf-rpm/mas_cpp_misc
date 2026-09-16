@@ -143,10 +143,10 @@ namespace infrastructure {
                   0)
                 std::cout << "channelSR=" << channelSRUrl.cStr() << std::endl;
 
-              info.initReaders(readerSrts.size());
-              info.initReaderSRs(readerSrts.size());
-              info.initWriters(writerSrts.size());
-              info.initWriterSRs(writerSrts.size());
+              info.initReaders(noOfReadersPerChannel);
+              info.initReaderSRs(noOfReadersPerChannel);
+              info.initWriters(noOfWritersPerChannel);
+              info.initWriterSRs(noOfWritersPerChannel);
               startupInfo = info;
             }
           } else {
