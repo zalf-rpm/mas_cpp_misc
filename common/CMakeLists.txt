@@ -151,6 +151,18 @@ endif()
 
 #------------------------------------------------------------------------------
 
+# create channel tests
+add_executable(channel-test
+	channel-test.cpp
+)
+target_link_libraries(channel-test common_lib)
+if (MSVC AND MT_RUNTIME_LIB)
+	target_compile_options(channel-test PRIVATE "/MT$<$<CONFIG:Debug>:d>")
+endif()
+add_test(NAME channel-test COMMAND channel-test)
+
+#------------------------------------------------------------------------------
+
 # create storage service
 add_executable(storage-service 
 	storage-service.h

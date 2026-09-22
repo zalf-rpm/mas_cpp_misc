@@ -38,6 +38,39 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 using namespace std;
 using namespace mas::infrastructure::common;
 
+namespace {
+// an owned (deep copied) message, as stored in the channel's buffer and handed over to readers
+typedef kj::Own<kj::Decay<AnyPointerMsg::Reader>> OwnMsg;
+
+typedef uint64_t WaiterId;
+
+template <typename T>
+struct Waiter {
+  // a reader or writer blocked on the channel, waiting to be woken up
+  //
+  // The id is what identifies a waiter. The address of its fulfiller must never be used for that:
+  // as soon as a waiter has been woken up and removed from its queue, its fulfiller is destroyed
+  // and the heap block can be handed right back to the next waiter. A cancellation guard holding
+  // such a stale address would then find - and erase - a different, still waiting entry, whose
+  // promise fails with "PromiseFulfiller was destroyed without fulfilling the promise" and whose
+  // message is silently lost. Ids increase monotonically and are never reused.
+  WaiterId id;
+  kj::Own<kj::PromiseFulfiller<T>> fulfiller;
+};
+
+// remove the waiter with the given id, returns whether it was still in the queue
+template <typename T>
+bool removeWaiter(std::deque<Waiter<T>>& q, WaiterId id) {
+  for (auto it = q.begin(); it != q.end(); ++it) {
+    if (it->id == id) {
+      q.erase(it);
+      return true;
+    }
+  }
+  return false;
+}
+} // namespace
+
 struct Channel::Impl {
   Channel& self;
   mas::infrastructure::common::Restorer* restorer{nullptr};
@@ -45,12 +78,14 @@ struct Channel::Impl {
   kj::String id;
   kj::String name{kj::str("Channel")};
   kj::String description;
-  kj::HashMap<kj::String, AnyPointerChannel::ChanReader::Client> readers;
-  kj::HashMap<kj::String, AnyPointerChannel::ChanWriter::Client> writers;
-  std::deque<kj::Own<kj::PromiseFulfiller<kj::Maybe<AnyPointerMsg::Reader>>>> blockingReadFulfillers;
-  std::deque<kj::Own<kj::PromiseFulfiller<void>>> blockingWriteFulfillers;
+  std::deque<Waiter<kj::Maybe<OwnMsg>>> blockingReadFulfillers;
+  std::deque<Waiter<void>> blockingWriteFulfillers;
+  WaiterId nextWaiterId{0};
   uint64_t bufferSize{1};
-  std::deque<kj::Own<kj::Decay<AnyPointerMsg::Reader>>> buffer;
+  std::deque<OwnMsg> buffer;
+  uint64_t reservedBufferSlots{0};
+  // buffer slots handed to writers which have been unblocked, but haven't stored their message
+  // yet; without counting them the same slot could be given away twice
   AnyPointerChannel::CloseSemantics autoCloseSemantics{AnyPointerChannel::CloseSemantics::FBP};
   bool sendCloseOnEmptyBuffer{false};
   AnyPointerChannel::Client client{nullptr};
@@ -58,6 +93,7 @@ struct Channel::Impl {
   bool channelShouldBeClosedOnEmptyBuffer = false;
   bool channelCanBeClosed = false;
   kj::Own<kj::PromiseFulfiller<void>> closeChannelFulfiller;
+  bool closeChannelFulfilled{false};
   uint64_t totalNoOfIpsReceived{0};
 
   struct StatsCB {
@@ -207,22 +243,114 @@ struct Channel::Impl {
     stats.setTimestamp(time);
   }
 
+  // enqueue a blocked reader/writer, returns the id identifying it in its queue
+  template <typename T>
+  WaiterId addWaiter(std::deque<Waiter<T>>& q, kj::Own<kj::PromiseFulfiller<T>>&& fulfiller) {
+    const auto id = ++nextWaiterId;
+    q.push_front(Waiter<T>{id, kj::mv(fulfiller)});
+    return id;
+  }
+
+  uint64_t freeBufferSlots() const {
+    const auto usedSlots = static_cast<uint64_t>(buffer.size()) + reservedBufferSlots;
+    return usedSlots < bufferSize ? bufferSize - usedSlots : 0;
+  }
+
+  // hand msg over to the reader which has been waiting longest, returns false if no reader is waiting
+  bool deliverToWaitingReader(OwnMsg& msg) {
+    if (blockingReadFulfillers.empty()) return false;
+    auto reader = kj::mv(blockingReadFulfillers.back());
+    blockingReadFulfillers.pop_back();
+    reader.fulfiller->fulfill(kj::mv(msg));
+    return true;
+  }
+
+  // accept a message from a writer, either by handing it to a waiting reader or by buffering it;
+  // the caller has to make sure that there is a waiting reader or a free/reserved buffer slot
+  void deliverOrBuffer(AnyPointerMsg::Reader v) {
+    // The message is copied out of the writer's request, because the channel keeps it around
+    // after the write call - and with it the request message it points into - is gone.
+    // Handing a waiting reader that view instead saves the copy and does work today: kj arms a
+    // fulfilled promise depth-first (see OnReadyEvent::arm), so the reader copies the value into
+    // its own response before the write call completes. But that holds only as long as nothing
+    // asynchronous ever happens between fulfilling the reader and the reader copying the message,
+    // which neither the compiler nor a test can check for us, and it fails as a use-after-free
+    // rather than as an error. Owning the message keeps the rule simple and checkable: once
+    // write() returned, the message belongs to the channel - which is also what is needed to
+    // hold messages back (stepping/pausing) or to forward them to an observer later on.
+    // If the copy ever shows up in a profile for large IPs, bring the borrowing back as an
+    // explicit fast path, but document the invariant and pin it with a test.
+    auto msg = capnp::clone(v);
+    if (!deliverToWaitingReader(msg)) buffer.push_front(kj::mv(msg));
+    totalNoOfIpsReceived++;
+  }
+
+  // give buffered messages to waiting readers; readers only ever block on an empty buffer, so
+  // normally there is nothing to do here, but make sure no message is left behind in the buffer
+  void deliverBufferedMsgsToWaitingReaders() {
+    while (!buffer.empty() && !blockingReadFulfillers.empty()) {
+      auto msg = kj::mv(buffer.back());
+      buffer.pop_back();
+      if (!deliverToWaitingReader(msg)) {
+        buffer.push_back(kj::mv(msg)); // can't happen, but never drop a message on the floor
+        break;
+      }
+    }
+  }
+
+  // tell all waiting readers that no more messages will arrive
+  void sendDoneToWaitingReaders() {
+    deliverBufferedMsgsToWaitingReaders();
+    // there are still buffered messages to be read, don't close the readers down yet
+    if (!buffer.empty()) return;
+
+    while (!blockingReadFulfillers.empty()) {
+      KJ_LOG(INFO, "Channel::Impl: sending done to waiting reader");
+      auto reader = kj::mv(blockingReadFulfillers.back());
+      blockingReadFulfillers.pop_back();
+      reader.fulfiller->fulfill(nullptr);
+    }
+  }
+
+  // wake up the writer which has been waiting longest, reserving a buffer slot for it until it
+  // actually stored its message (the slot is released again by the writer's cancellation guard)
+  void unblockWaitingWriter() {
+    auto writer = kj::mv(blockingWriteFulfillers.back());
+    blockingWriteFulfillers.pop_back();
+    reservedBufferSlots++;
+    writer.fulfiller->fulfill();
+  }
+
   void unblockWaitingWriters(uint64_t slots) {
     if (sendCloseOnEmptyBuffer || channelCanBeClosed || channelShouldBeClosedOnEmptyBuffer) return;
 
     while (slots > 0 && !blockingWriteFulfillers.empty()) {
       KJ_LOG(INFO, "Channel::Impl: unblock waiting writer");
-      auto&& bwf = blockingWriteFulfillers.back();
-      bwf->fulfill();
-      blockingWriteFulfillers.pop_back();
+      unblockWaitingWriter();
       --slots;
     }
   }
 
-  void unblockWaitingWritersWithBufferSpace() {
-    const auto bufferedMsgs = static_cast<uint64_t>(buffer.size());
-    const auto freeSlots = bufferedMsgs < bufferSize ? bufferSize - bufferedMsgs : 0;
-    unblockWaitingWriters(freeSlots);
+  void unblockWaitingWritersWithBufferSpace() { unblockWaitingWriters(freeBufferSlots()); }
+
+  // release writers blocked on a full buffer which will never be unblocked by a reader anymore,
+  // because the channel is closing down; if they were just dropped their fulfillers would be
+  // destroyed unfulfilled and the writers would see a "PromiseFulfiller was destroyed ..." error
+  void releaseBlockedWriters() {
+    while (!blockingWriteFulfillers.empty()) {
+      KJ_LOG(INFO, "Channel::Impl: release waiting writer, because the channel is closing");
+      unblockWaitingWriter();
+    }
+  }
+
+  // the promise of Channel::closeChannel may be fulfilled from several places, make sure it is
+  // fulfilled at most once and only if it has been requested at all
+  void closeChannelNow() {
+    channelCanBeClosed = true;
+    releaseBlockedWriters();
+    if (closeChannelFulfilled || closeChannelFulfiller.get() == nullptr) return;
+    closeChannelFulfilled = true;
+    closeChannelFulfiller->fulfill();
   }
 
   Impl(Channel& self, mas::infrastructure::common::Restorer* restorer, kj::StringPtr name,
@@ -249,6 +377,12 @@ struct Channel::Impl {
       // });
     }
   }
+
+  // Keep these the last data members of Impl: members are destroyed in reverse order of
+  // declaration, so the readers/writers are destroyed first and the cancellation guards of their
+  // outstanding read/write promises still see intact waiter queues and buffer.
+  kj::HashMap<kj::String, AnyPointerChannel::ChanReader::Client> readers;
+  kj::HashMap<kj::String, AnyPointerChannel::ChanWriter::Client> writers;
 
   AnyPointerChannel::ChanReader::Client createReader() {
     auto r = kj::heap<Reader>(self);
@@ -313,14 +447,11 @@ void Channel::closedWriter(kj::StringPtr writerId) {
     // cout << "Channel::closedWriter: FBP semantics and no writers left -> sending done to readers" << endl;
 
     // as we just received a done message which should be distributed and would
-    // fill the buffer, unblock all readers, so they send the done message
-    while (kj::size(impl->blockingReadFulfillers) > 0) {
-      auto& brf = impl->blockingReadFulfillers.back();
-      brf->fulfill(nullptr); // kj::Maybe<AnyPointerMsg::Reader>());
-      impl->blockingReadFulfillers.pop_back();
-      KJ_LOG(INFO, "Channel::closedWriter: sent done to reader on last finished writer");
-      // cout << "Channel::closedWriter: sent done to reader on last finished writer" << endl;
-    }
+    // fill the buffer, unblock all readers, so they send the done message;
+    // buffered messages (if there are any left) are handed out before the done message, so that
+    // no message is dropped on the way down
+    impl->sendDoneToWaitingReaders();
+    impl->releaseBlockedWriters();
     KJ_LOG(INFO, kj::size(impl->blockingReadFulfillers));
     KJ_LOG(INFO, kj::size(impl->blockingWriteFulfillers));
   }
@@ -332,7 +463,7 @@ kj::Promise<void> Channel::setBufferSize(SetBufferSizeContext context) {
   const auto newBufferSize = std::max(static_cast<uint64_t>(1), context.getParams().getSize());
   impl->bufferSize = newBufferSize;
   if (newBufferSize > oldBufferSize) {
-    impl->unblockWaitingWriters(newBufferSize - oldBufferSize);
+    impl->unblockWaitingWritersWithBufferSpace();
   }
   return kj::READY_NOW;
 }
@@ -371,11 +502,12 @@ kj::Promise<void> Channel::closeChannel() {
 kj::Promise<void> Channel::close(CloseContext context) {
   KJ_LOG(INFO, "Channel::close: message received", context.getParams().getWaitForEmptyBuffer());
   if (!context.getParams().getWaitForEmptyBuffer() || impl->buffer.empty()) {
-    impl->channelCanBeClosed = true;
-    impl->closeChannelFulfiller->fulfill();
+    impl->closeChannelNow();
   } else {
     impl->channelShouldBeClosedOnEmptyBuffer = true;
     impl->sendCloseOnEmptyBuffer = true;
+    // no further writes are accepted from here on, so blocked writers would wait forever
+    impl->releaseBlockedWriters();
   }
   return kj::READY_NOW;
 }
@@ -437,18 +569,15 @@ kj::Promise<void> Reader::read(ReadContext context) {
   // the buffer is not empty, send next value
   if (!b.empty()) {
     KJ_LOG(INFO, "Reader::read: buffer not empty, send next value");
-    auto&& v = b.back();
-    KJ_ASSERT(v.get()->isValue(), "Msg contains a value, because before buffering we checked for done.");
-    context.getResults().setValue(v.get()->getValue());
+    auto v = kj::mv(b.back());
     b.pop_back();
+    KJ_ASSERT(v->isValue(), "Msg contains a value, because before buffering we checked for done.");
+    context.getResults().setValue(v->getValue());
 
     c.impl->unblockWaitingWritersWithBufferSpace();
 
     // check if the channel is supposed to be closed and just waiting for an empty buffer
-    if (b.empty() && c.impl->channelShouldBeClosedOnEmptyBuffer) {
-      c.impl->channelCanBeClosed = true;
-      c.impl->closeChannelFulfiller->fulfill();
-    }
+    if (b.empty() && c.impl->channelShouldBeClosedOnEmptyBuffer) c.impl->closeChannelNow();
 
     return kj::READY_NOW;
   }
@@ -465,46 +594,38 @@ kj::Promise<void> Reader::read(ReadContext context) {
     c.closedReader(id());
 
     // if there are other readers waiting close them as well
-    while (!c.impl->blockingReadFulfillers.empty()) {
-      KJ_LOG(INFO, "Reader::read: close other waiting readers");
-      auto&& brf = c.impl->blockingReadFulfillers.back();
-      brf->fulfill(nullptr);
-      c.impl->blockingReadFulfillers.pop_back();
-    }
+    KJ_LOG(INFO, "Reader::read: close other waiting readers");
+    c.impl->sendDoneToWaitingReaders();
 
     return kj::READY_NOW;
   }
 
   KJ_LOG(INFO, "Reader::read: block, because no value to read");
-  auto paf = kj::newPromiseAndFulfiller<kj::Maybe<AnyPointerMsg::Reader>>();
-  auto* fulfillerPtr = paf.fulfiller.get();
-  c.impl->blockingReadFulfillers.push_front(kj::mv(paf.fulfiller));
+  auto paf = kj::newPromiseAndFulfiller<kj::Maybe<OwnMsg>>();
+  const auto waiterId = c.impl->addWaiter(c.impl->blockingReadFulfillers, kj::mv(paf.fulfiller));
 
-  // This guard runs its lambda when it is destroyed (i.e. when the promise is canceled).
-  auto cancelGuard = kj::defer([this, fulfillerPtr]() {
-    auto& q = _channel.impl->blockingReadFulfillers;
-    for (auto it = q.begin(); it != q.end(); ++it) {
-      if (it->get() == fulfillerPtr) {
-        q.erase(it);
-        KJ_LOG(INFO, "Reader::read: canceled, fulfiller removed from queue");
-        break;
-      }
+  // This guard runs its lambda when it is destroyed, i.e. when the promise is canceled, but also
+  // after it completed normally. In the latter case this waiter has long been taken off the queue
+  // and removeWaiter simply doesn't find it anymore - which is exactly why waiters are identified
+  // by an id and never by the address of their fulfiller (see Waiter).
+  auto cancelGuard = kj::defer([this, waiterId]() {
+    if (removeWaiter(_channel.impl->blockingReadFulfillers, waiterId)) {
+      KJ_LOG(INFO, "Reader::read: canceled, waiting reader removed from queue");
     }
   });
 
   return kj::mv(paf.promise)
-         .then([context, this](kj::Maybe<AnyPointerMsg::Reader> msg) mutable {
+         .then([context, this](kj::Maybe<OwnMsg> msg) mutable {
            KJ_REQUIRE(!_closed, "Reader already closed.", _closed);
 
-           if (_channel.impl->sendCloseOnEmptyBuffer && msg == nullptr) {
+           KJ_IF_MAYBE(m, msg) {
+             context.getResults().setValue((*m)->getValue());
+             KJ_LOG(INFO, "Reader::read: promise_lambda: sending value to reader");
+           } else {
+             // no message means the channel is closing down
              context.getResults().setDone();
              KJ_LOG(INFO, "Reader::read: promise_lambda: sending done to reader");
              _channel.closedReader(id());
-           } else {
-             KJ_IF_MAYBE(m, msg) {
-               context.getResults().setValue(m->getValue());
-               KJ_LOG(INFO, "Reader::read: promise_lambda: sending value to reader");
-             }
            }
          })
          .attach(kj::mv(cancelGuard));
@@ -519,18 +640,15 @@ kj::Promise<void> Reader::readIfMsg(ReadIfMsgContext context) {
   // the buffer is not empty, send next the value
   if (!b.empty()) {
     KJ_LOG(INFO, "Reader::readIfMsg: buffer not empty, send next value");
-    auto&& v = b.back();
-    KJ_ASSERT(v.get()->isValue(), "Msg contains a value, because before buffering we checked for done.");
-    context.getResults().setValue(v.get()->getValue());
+    auto v = kj::mv(b.back());
     b.pop_back();
+    KJ_ASSERT(v->isValue(), "Msg contains a value, because before buffering we checked for done.");
+    context.getResults().setValue(v->getValue());
 
     c.impl->unblockWaitingWritersWithBufferSpace();
 
     // check if the channel is supposed to be closed and just waiting for an empty buffer
-    if (b.empty() && c.impl->channelShouldBeClosedOnEmptyBuffer) {
-      c.impl->channelCanBeClosed = true;
-      c.impl->closeChannelFulfiller->fulfill();
-    }
+    if (b.empty() && c.impl->channelShouldBeClosedOnEmptyBuffer) c.impl->closeChannelNow();
 
     return kj::READY_NOW;
   }
@@ -547,12 +665,8 @@ kj::Promise<void> Reader::readIfMsg(ReadIfMsgContext context) {
     c.closedReader(id());
 
     // if there are other readers waiting close them as well
-    while (!c.impl->blockingReadFulfillers.empty()) {
-      KJ_LOG(INFO, "Reader::readIfMsg: close other waiting readers");
-      auto&& brf = c.impl->blockingReadFulfillers.back();
-      brf->fulfill(nullptr);
-      c.impl->blockingReadFulfillers.pop_back();
-    }
+    KJ_LOG(INFO, "Reader::readIfMsg: close other waiting readers");
+    c.impl->sendDoneToWaitingReaders();
     return kj::READY_NOW;
   }
 
@@ -600,7 +714,6 @@ kj::Promise<void> Writer::write(WriteContext context) {
 
   auto v = context.getParams();
   auto& c = _channel;
-  auto& b = c.impl->buffer;
 
   // don't accept any further writes if the channel is supposed to be closed (now or when the buffer is empty)
   if (c.impl->channelCanBeClosed || c.impl->channelShouldBeClosedOnEmptyBuffer) {
@@ -615,48 +728,48 @@ kj::Promise<void> Writer::write(WriteContext context) {
     return c.impl->sendImmediateStats(); //kj::READY_NOW;
   }
 
-  // there's a reader waiting
-  if (!c.impl->blockingReadFulfillers.empty()) {
-    KJ_LOG(INFO, "Writer::write: unblock waiting reader");
-    auto&& brf = c.impl->blockingReadFulfillers.back();
-    brf->fulfill(v);
-    c.impl->totalNoOfIpsReceived++;
-    c.impl->blockingReadFulfillers.pop_back();
-    return c.impl->sendImmediateStats(); //kj::READY_NOW;
-  }
-
-  // there space to store the message
-  if (b.size() < c.impl->bufferSize) {
-    KJ_LOG(INFO, "Writer::write: no reader waiting and space in buffer -> storing message");
-    b.push_front(capnp::clone(v));
-    c.impl->totalNoOfIpsReceived++;
+  // there's a reader waiting or space to store the message
+  if (!c.impl->blockingReadFulfillers.empty() || c.impl->freeBufferSlots() > 0) {
+    KJ_LOG(INFO, "Writer::write: hand message to waiting reader or store it in the buffer");
+    c.impl->deliverOrBuffer(v);
     return c.impl->sendImmediateStats(); //kj::READY_NOW;
   }
 
   // block until the buffer has space
   KJ_LOG(INFO, "Writer::write: no reader waiting and no space in buffer -> block, waiting for reader");
   auto paf = kj::newPromiseAndFulfiller<void>();
-  auto* fulfillerPtr = paf.fulfiller.get();
-  c.impl->blockingWriteFulfillers.push_front(kj::mv(paf.fulfiller));
+  const auto waiterId = c.impl->addWaiter(c.impl->blockingWriteFulfillers, kj::mv(paf.fulfiller));
 
-  // This guard runs its lambda when it is destroyed (i.e. when the promise is canceled).
-  auto cancelGuard = kj::defer([this, fulfillerPtr]() {
-    auto& q = _channel.impl->blockingWriteFulfillers;
-    for (auto it = q.begin(); it != q.end(); ++it) {
-      if (it->get() == fulfillerPtr) {
-        q.erase(it);
-        KJ_LOG(INFO, "Writer::write: canceled, fulfiller removed from queue");
-        break;
-      }
+  // This guard runs its lambda when it is destroyed, i.e. when the promise is canceled, but also
+  // after it completed normally. In the latter case this waiter has long been taken off the queue
+  // and removeWaiter simply doesn't find it anymore - which is exactly why waiters are identified
+  // by an id and never by the address of their fulfiller (see Waiter).
+  auto cancelGuard = kj::defer([this, waiterId]() {
+    auto& impl = *_channel.impl;
+    if (removeWaiter(impl.blockingWriteFulfillers, waiterId)) {
+      // still waiting, so no buffer slot had been reserved for us
+      KJ_LOG(INFO, "Writer::write: canceled, waiting writer removed from queue");
+      return;
     }
+    // we had been unblocked, so a buffer slot was reserved for us; release it again, either
+    // because the message has been stored by now or because the write was canceled in between
+    if (impl.reservedBufferSlots > 0) impl.reservedBufferSlots--;
+    impl.unblockWaitingWritersWithBufferSpace();
   });
 
   return paf.promise
             .then([context, this]() mutable {
               KJ_REQUIRE(!_closed, "promise_lambda: Writer already closed.", _closed);
-              auto v = context.getParams();
-              _channel.impl->buffer.push_front(capnp::clone(v));
-              _channel.impl->totalNoOfIpsReceived++;
+              auto& impl = *_channel.impl;
+              // the channel started to close down while we were blocked, drop the message like
+              // the non-blocking path above does
+              if (impl.channelCanBeClosed || impl.channelShouldBeClosedOnEmptyBuffer) {
+                KJ_LOG(INFO, "Writer::write: promise_lambda: channel is closing -> dropping message");
+                return;
+              }
+              // a reader may have started waiting in the meantime, so don't just buffer the
+              // message, or it could sit in the buffer while the reader blocks forever
+              impl.deliverOrBuffer(context.getParams());
               KJ_LOG(INFO, "Writer::write: promise_lambda: wrote value to buffer");
             }).then([this]() { return _channel.impl->sendImmediateStats(); })
             .attach(kj::mv(cancelGuard));
@@ -667,7 +780,6 @@ kj::Promise<void> Writer::writeIfSpace(WriteIfSpaceContext context) {
 
   auto v = context.getParams();
   auto& c = _channel;
-  auto& b = c.impl->buffer;
 
   // don't accept any further writes if the channel is supposed to be closed (now or when the buffer is empty)
   if (c.impl->channelCanBeClosed || c.impl->channelShouldBeClosedOnEmptyBuffer) {
@@ -684,22 +796,10 @@ kj::Promise<void> Writer::writeIfSpace(WriteIfSpaceContext context) {
     return c.impl->sendImmediateStats(); //kj::READY_NOW;
   }
 
-  // there's a reader waiting
-  if (!c.impl->blockingReadFulfillers.empty()) {
-    KJ_LOG(INFO, "Writer::writeIfSpace: unblock waiting reader");
-    auto&& brf = c.impl->blockingReadFulfillers.back();
-    brf->fulfill(v);
-    c.impl->totalNoOfIpsReceived++;
-    c.impl->blockingReadFulfillers.pop_back();
-    context.getResults().setSuccess(true);
-    return c.impl->sendImmediateStats(); //kj::READY_NOW;
-  }
-
-  // there space to store the message
-  if (b.size() < c.impl->bufferSize) {
-    KJ_LOG(INFO, "Writer::writeIfSpace: no reader waiting and space in buffer -> storing message");
-    b.push_front(capnp::clone(v));
-    c.impl->totalNoOfIpsReceived++;
+  // there's a reader waiting or space to store the message
+  if (!c.impl->blockingReadFulfillers.empty() || c.impl->freeBufferSlots() > 0) {
+    KJ_LOG(INFO, "Writer::writeIfSpace: hand message to waiting reader or store it in the buffer");
+    c.impl->deliverOrBuffer(v);
     context.getResults().setSuccess(true);
     return c.impl->sendImmediateStats(); //kj::READY_NOW;
   }
