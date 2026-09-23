@@ -128,6 +128,21 @@ kj::Promise<void> readUntilDone(ReaderClient r, kj::Vector<kj::String>& out) {
   });
 }
 
+// read count messages, idling for gap between them (a reader which does some work per message)
+kj::Promise<void> readSeqWithGaps(ReaderClient r, uint count, kj::Vector<kj::String>& out,
+                                  kj::Timer& timer, kj::Duration gap) {
+  if (count == 0) return kj::READY_NOW;
+  return r.readRequest().send()
+          .then([&out](auto&& msg) {
+            KJ_REQUIRE(msg.isValue(), "reader received done/noMsg although more was expected");
+            out.add(valueOf(msg.getValue()));
+          })
+          .then([&timer, gap]() { return timer.afterDelay(gap); })
+          .then([r, count, &out, &timer, gap]() mutable {
+            return readSeqWithGaps(r, count - 1, out, timer, gap);
+          });
+}
+
 // check that every "<prefix w>-<i>" was received exactly once
 void assertReceivedEachMessageOnce(kj::Vector<kj::String>& received, uint noOfWriters,
                                    uint msgsPerWriter) {
@@ -187,6 +202,68 @@ void concurrentWritersUntilDone(kj::WaitScope& ws, kj::Timer& timer) {
   kj::joinPromisesFailFast(proms.finish()).wait(ws);
 
   assertReceivedEachMessageOnce(received, noOfWriters, msgsPerWriter);
+}
+
+// The pattern of a flow whose workers are busy computing and then all write their one result at
+// roughly the same time: the writers sit idle, wake up together, write once each and go back to
+// sleep, while the reader takes its time between messages. That drives every message through the
+// block/unblock path, unlike a continuous flood where the buffer rarely runs empty.
+void burstyWritersLoseNoMessages(kj::WaitScope& ws, kj::Timer& timer) {
+  constexpr uint noOfWriters = 10;
+  constexpr uint noOfRounds = 15;
+
+  TestChannel channel(1, timer);
+  auto reader = channel.reader(ws);
+  // the writers are created once up front, as the channel service does it
+  kj::Vector<WriterClient> writers;
+  for (uint w = 0; w < noOfWriters; w++) writers.add(channel.writer(ws));
+
+  kj::Vector<kj::String> received;
+  for (uint round = 0; round < noOfRounds; round++) {
+    auto proms = kj::heapArrayBuilder<kj::Promise<void>>(noOfWriters + 1);
+    proms.add(readSeqWithGaps(reader, noOfWriters, received, timer, 1 * kj::MILLISECONDS));
+    for (uint w = 0; w < noOfWriters; w++) {
+      proms.add(write(writers[w], kj::str("w", w, "-", round)));
+    }
+    kj::joinPromisesFailFast(proms.finish()).wait(ws);
+  }
+
+  KJ_ASSERT(received.size() == noOfWriters * noOfRounds, received.size());
+  std::map<std::string, int> counts;
+  for (auto& msg : received) counts[msg.cStr()]++;
+  for (uint w = 0; w < noOfWriters; w++) {
+    for (uint round = 0; round < noOfRounds; round++) {
+      auto expected = kj::str("w", w, "-", round);
+      KJ_ASSERT(counts[expected.cStr()] == 1, "message not received exactly once", expected,
+                counts[expected.cStr()]);
+    }
+  }
+}
+
+// Same burst, but the reader only turns up once every writer is already blocked on the full
+// buffer, so the whole burst has to be drained through the unblock path.
+void readerArrivingAfterTheBurstGetsEverything(kj::WaitScope& ws, kj::Timer& timer) {
+  constexpr uint noOfWriters = 10;
+
+  TestChannel channel(1, timer);
+  auto reader = channel.reader(ws);
+  kj::Vector<WriterClient> writers;
+  for (uint w = 0; w < noOfWriters; w++) writers.add(channel.writer(ws));
+
+  auto proms = kj::heapArrayBuilder<kj::Promise<void>>(noOfWriters + 1);
+  for (uint w = 0; w < noOfWriters; w++) proms.add(write(writers[w], kj::str("w", w)));
+  ws.poll(); // one writer buffers its message, all others block
+
+  kj::Vector<kj::String> received;
+  proms.add(readSeqWithGaps(reader, noOfWriters, received, timer, 1 * kj::MILLISECONDS));
+  kj::joinPromisesFailFast(proms.finish()).wait(ws);
+
+  KJ_ASSERT(received.size() == noOfWriters, received.size());
+  std::map<std::string, int> counts;
+  for (auto& msg : received) counts[msg.cStr()]++;
+  for (uint w = 0; w < noOfWriters; w++) {
+    KJ_ASSERT(counts[kj::str("w", w).cStr()] == 1, "message not received exactly once", w);
+  }
 }
 
 // Messages of a single writer have to arrive in the order they were written.
@@ -271,6 +348,71 @@ void canceledReadLeavesOtherReadersAlone(kj::WaitScope& ws, kj::Timer& timer) {
 
   KJ_ASSERT(valueOf(r1.wait(ws).getValue()) == "msg-0");
   KJ_ASSERT(valueOf(r2.wait(ws).getValue()) == "msg-1");
+}
+
+// Canceled calls must not wedge the channel. A buffer slot reserved for an unblocked writer has
+// to be released again in every case - if one leaks, freeBufferSlots() stays 0 forever, no
+// blocked writer is ever woken again and the channel silently stops forwarding without any error.
+void canceledCallsDoNotWedgeTheChannel(kj::WaitScope& ws, kj::Timer& timer) {
+  constexpr uint noOfRounds = 50;
+
+  TestChannel channel(1, timer);
+  auto reader = channel.reader(ws);
+  auto writer1 = channel.writer(ws);
+  auto writer2 = channel.writer(ws);
+  auto writer3 = channel.writer(ws);
+
+  for (uint round = 0; round < noOfRounds; round++) {
+    // a read canceled while it is waiting on the empty channel
+    {
+      auto canceledRead = reader.readRequest().send();
+      ws.poll();
+    }
+    ws.poll();
+
+    auto buffered = write(writer1, kj::str("buffered-", round)); // -> buffered
+    auto blocked = write(writer2, kj::str("blocked-", round));   // -> blocks on the full buffer
+    {
+      auto canceledWrite = write(writer3, kj::str("canceled-", round)); // -> blocks, then canceled
+      ws.poll();
+    }
+    ws.poll();
+
+    kj::Vector<kj::String> received;
+    readSeq(reader, 2, received).wait(ws);
+    buffered.wait(ws);
+    blocked.wait(ws);
+
+    KJ_ASSERT(received.size() == 2, received.size());
+    KJ_ASSERT(received[0] == kj::str("buffered-", round), received[0], round);
+    KJ_ASSERT(received[1] == kj::str("blocked-", round), received[1], round);
+  }
+}
+
+// A read is a destructive take: the moment the channel hands a message to a waiting reader the
+// message is gone from the channel, and the read() RPC carries it to the client. If the client
+// then drops that call - an asyncio task cancellation, a race lost against another port - the
+// message dies with the response and nobody notices: the writer was told the write succeeded.
+//
+// This pins that property rather than endorsing it. A client must never cancel a read it might
+// still need; fixing it on this side needs an acknowledged read (hand out the message, keep it
+// until the reader confirms it), which is a schema change.
+void canceledReadAfterHandoverLosesTheMessage(kj::WaitScope& ws, kj::Timer& timer) {
+  TestChannel channel(1, timer);
+  auto reader = channel.reader(ws);
+  auto writer = channel.writer(ws);
+
+  {
+    auto read = reader.readRequest().send(); // -> waits in the channel
+    ws.poll();
+    write(writer, "handed over").wait(ws);   // -> handed to the waiting reader, write reports success
+    KJ_ASSERT(read.poll(ws), "the message should have reached the read call");
+    // the client drops the call without ever looking at the response
+  }
+  ws.poll();
+
+  auto next = reader.readRequest().send();
+  KJ_ASSERT(!next.poll(ws), "channel unexpectedly kept the message - has read become acknowledged?");
 }
 
 // The channel must not tell a reader that the writers are done while there are still buffered
@@ -405,10 +547,14 @@ struct Test {
 const Test TESTS[] = {
   {"concurrentWritersLoseNoMessages", &concurrentWritersLoseNoMessages},
   {"concurrentWritersUntilDone", &concurrentWritersUntilDone},
+  {"burstyWritersLoseNoMessages", &burstyWritersLoseNoMessages},
+  {"readerArrivingAfterTheBurstGetsEverything", &readerArrivingAfterTheBurstGetsEverything},
   {"messagesKeepTheirOrder", &messagesKeepTheirOrder},
   {"unblockedWriterReachesWaitingReader", &unblockedWriterReachesWaitingReader},
   {"canceledWriteLeavesOtherWritersAlone", &canceledWriteLeavesOtherWritersAlone},
   {"canceledReadLeavesOtherReadersAlone", &canceledReadLeavesOtherReadersAlone},
+  {"canceledCallsDoNotWedgeTheChannel", &canceledCallsDoNotWedgeTheChannel},
+  {"canceledReadAfterHandoverLosesTheMessage", &canceledReadAfterHandoverLosesTheMessage},
   {"doneIsSentOnlyAfterTheBufferIsEmpty", &doneIsSentOnlyAfterTheBufferIsEmpty},
   {"waitingReaderIsClosedDown", &waitingReaderIsClosedDown},
   {"growingTheBufferUnblocksWriters", &growingTheBufferUnblocksWriters},
