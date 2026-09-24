@@ -71,7 +71,15 @@ bool removeWaiter(std::deque<Waiter<T>>& q, WaiterId id) {
 }
 } // namespace
 
-struct Channel::Impl {
+struct Channel::Impl : public kj::TaskSet::ErrorHandler {
+  struct AliveFlag : public kj::Refcounted {
+    // Leases can outlive the channel - they are owned by whoever holds the capability - so they
+    // need a way to find out whether there is still a channel to give their message back to.
+    Impl* impl;
+
+    explicit AliveFlag(Impl* impl) : impl(impl) {}
+  };
+
   Channel& self;
   mas::infrastructure::common::Restorer* restorer{nullptr};
   kj::Timer& timer;
@@ -95,6 +103,19 @@ struct Channel::Impl {
   kj::Own<kj::PromiseFulfiller<void>> closeChannelFulfiller;
   bool closeChannelFulfilled{false};
   uint64_t totalNoOfIpsReceived{0};
+  kj::Own<AliveFlag> aliveFlag;
+  bool paused{false};
+  uint64_t stepCredits{0};
+  uint64_t gatesPending{0};
+  // observations a gating observer has not answered yet; while any are open no message may be
+  // delivered, which is how a debugger holds a flow by simply not returning from saw()
+  kj::TaskSet tasks;
+  // while paused, messages only go to readers as long as there are step credits left; writers
+  // are not stopped, they fill the buffer and then block on their own, so a paused channel
+  // back-pressures its upstream without any extra machinery
+  kj::HashMap<kj::String, bool> leasedMsgsByReaderId;
+  // readers which hold a message that has been leased out but not acknowledged yet; a reader may
+  // only hold one at a time, so that a message coming back keeps its place in the queue
 
   struct StatsCB {
     AnyPointerChannel::StatsCallback::Client callback;
@@ -243,6 +264,129 @@ struct Channel::Impl {
     stats.setTimestamp(time);
   }
 
+  struct ObserverReg {
+    AnyPointerChannel::Observer::Client callback;
+    uint32_t everyNth{1};
+    bool withContent{false};
+    bool gate{false};
+    bool callInFlight{false};
+    // a best effort observer which is still busy is skipped rather than waited for
+  };
+
+  kj::HashMap<kj::String, ObserverReg> observers;
+
+  class UnregObserver final : public AnyPointerChannel::Observer::Unregister::Server {
+    kj::HashMap<kj::String, ObserverReg>& _observers;
+    kj::String _id;
+
+  public:
+    UnregObserver(kj::HashMap<kj::String, ObserverReg>& observers, kj::StringPtr id)
+    : _observers(observers)
+    , _id(kj::str(id)) {}
+
+    kj::Promise<void> unreg(UnregContext context) override {
+      _observers.erase(_id);
+      context.getResults().setSuccess(true);
+      return kj::READY_NOW;
+    }
+  };
+
+  void gateFinished() {
+    if (gatesPending > 0) gatesPending--;
+    if (gatesPending == 0) {
+      deliverBufferedMsgsToWaitingReaders();
+      unblockWaitingWritersWithBufferSpace();
+    }
+  }
+
+  // tell the observers about a message the channel just accepted from a writer
+  //
+  // This happens on the way in, so every message is reported exactly once, no matter how often it
+  // is later handed out - a message returning from an unacknowledged lease is not reported twice.
+  void observeAcceptedMsg(AnyPointerMsg::Reader msg) {
+    if (observers.size() == 0) return;
+
+    for (auto& [id, observer] : observers) {
+      if (observer.everyNth > 1 && totalNoOfIpsReceived % observer.everyNth != 0) continue;
+      // a best effort observer must never slow the channel down, so it misses this one
+      if (!observer.gate && observer.callInFlight) continue;
+
+      auto req = observer.callback.sawRequest();
+      auto event = req.initEvent();
+      event.setSeqNo(totalNoOfIpsReceived);
+      event.setTimestamp(formatLocalTimeWithMillis(std::chrono::system_clock::now()));
+      event.setSizeInWords(msg.totalSize().wordCount);
+      if (observer.withContent && msg.isValue()) event.setContent(msg.getValue());
+
+      if (observer.gate) {
+        gatesPending++;
+        tasks.add(req.send().then([this](auto&&) { gateFinished(); },
+                                  [this, id = kj::str(id)](kj::Exception&& err) {
+                                    // a broken observer may not hold the channel forever
+                                    observers.erase(id);
+                                    gateFinished();
+                                  }));
+      } else {
+        observer.callInFlight = true;
+        tasks.add(req.send().then([this, id = kj::str(id)](auto&&) {
+                                    KJ_IF_MAYBE(o, observers.find(id)) { o->callInFlight = false; }
+                                  },
+                                  [this, id = kj::str(id)](kj::Exception&& err) { observers.erase(id); }));
+      }
+    }
+  }
+
+  class Lease final : public AnyPointerChannel::ChanReader::Lease::Server {
+    // Keeps the message owed to the channel until it is acknowledged. A read hands the message
+    // over and the channel lets go of it, so if the reader never takes delivery - the call was
+    // canceled, the client died, the connection broke - the message would be gone for good.
+    // Releasing this capability without acknowledging it puts the message back instead.
+    kj::Own<AliveFlag> _alive;
+    kj::String _readerId;
+    kj::Maybe<OwnMsg> _msg;
+
+  public:
+    Lease(kj::Own<AliveFlag> alive, kj::StringPtr readerId, OwnMsg&& msg)
+    : _alive(kj::mv(alive))
+    , _readerId(kj::str(readerId))
+    , _msg(kj::mv(msg)) {}
+
+    ~Lease() {
+      KJ_IF_MAYBE(msg, _msg) {
+        KJ_LOG(INFO, "Lease: released without an ack -> message goes back into the channel");
+        if (_alive->impl != nullptr) _alive->impl->requeue(kj::mv(*msg), _readerId);
+      }
+    }
+
+    kj::Promise<void> ack(AckContext context) override {
+      _msg = nullptr;
+      if (_alive->impl != nullptr) _alive->impl->leaseFinished(_readerId);
+      return kj::READY_NOW;
+    }
+  };
+
+  bool hasUnackedLease(kj::StringPtr readerId) { return leasedMsgsByReaderId.find(readerId) != nullptr; }
+
+  bool hasUnackedLeases() const { return leasedMsgsByReaderId.size() > 0; }
+
+  // hand the message to the reader, but keep it owed to the channel until it is acknowledged
+  AnyPointerChannel::ChanReader::Lease::Client leaseMsg(kj::StringPtr readerId, OwnMsg&& msg) {
+    leasedMsgsByReaderId.upsert(kj::str(readerId), true, [](bool&, bool) {});
+    return kj::heap<Lease>(kj::addRef(*aliveFlag), readerId, kj::mv(msg));
+  }
+
+  void leaseFinished(kj::StringPtr readerId) { leasedMsgsByReaderId.erase(readerId); }
+
+  // take a leased message back which nobody acknowledged
+  void requeue(OwnMsg&& msg, kj::StringPtr readerId) {
+    leaseFinished(readerId);
+    // the buffer is read from the back, so this puts the message back at the head of the queue
+    // where it was taken from, keeping the order it arrived in
+    buffer.push_back(kj::mv(msg));
+    deliverBufferedMsgsToWaitingReaders();
+    unblockWaitingWritersWithBufferSpace();
+  }
+
   // enqueue a blocked reader/writer, returns the id identifying it in its queue
   template <typename T>
   WaiterId addWaiter(std::deque<Waiter<T>>& q, kj::Own<kj::PromiseFulfiller<T>>&& fulfiller) {
@@ -256,12 +400,22 @@ struct Channel::Impl {
     return usedSlots < bufferSize ? bufferSize - usedSlots : 0;
   }
 
-  // hand msg over to the reader which has been waiting longest, returns false if no reader is waiting
+  // whether a message may go to a reader right now
+  bool mayDeliver() const { return (!paused || stepCredits > 0) && gatesPending == 0; }
+
+  // called after a message went to a reader, to use up a step credit if the channel is paused
+  void deliveryDone() {
+    if (paused && stepCredits > 0) stepCredits--;
+  }
+
+  // hand msg over to the reader which has been waiting longest, returns false if no reader is
+  // waiting or if the channel is paused
   bool deliverToWaitingReader(OwnMsg& msg) {
-    if (blockingReadFulfillers.empty()) return false;
+    if (blockingReadFulfillers.empty() || !mayDeliver()) return false;
     auto reader = kj::mv(blockingReadFulfillers.back());
     blockingReadFulfillers.pop_back();
     reader.fulfiller->fulfill(kj::mv(msg));
+    deliveryDone();
     return true;
   }
 
@@ -281,8 +435,10 @@ struct Channel::Impl {
     // If the copy ever shows up in a profile for large IPs, bring the borrowing back as an
     // explicit fast path, but document the invariant and pin it with a test.
     auto msg = capnp::clone(v);
-    if (!deliverToWaitingReader(msg)) buffer.push_front(kj::mv(msg));
     totalNoOfIpsReceived++;
+    // observe before delivering, so that a gating observer gets to hold the message back
+    observeAcceptedMsg(*msg);
+    if (!deliverToWaitingReader(msg)) buffer.push_front(kj::mv(msg));
   }
 
   // give buffered messages to waiting readers; readers only ever block on an empty buffer, so
@@ -301,8 +457,9 @@ struct Channel::Impl {
   // tell all waiting readers that no more messages will arrive
   void sendDoneToWaitingReaders() {
     deliverBufferedMsgsToWaitingReaders();
-    // there are still buffered messages to be read, don't close the readers down yet
-    if (!buffer.empty()) return;
+    // there are still messages to be read - or one out on lease which may yet come back - so
+    // don't close the readers down yet
+    if (!buffer.empty() || hasUnackedLeases()) return;
 
     while (!blockingReadFulfillers.empty()) {
       KJ_LOG(INFO, "Channel::Impl: sending done to waiting reader");
@@ -362,11 +519,20 @@ struct Channel::Impl {
   , id(kj::str(sole::uuid4().str()))
   , name(kj::str(name))
   , description(kj::str(description))
-  , bufferSize(std::max(static_cast<uint64_t>(1), bufferSize)) {
+  , bufferSize(std::max(static_cast<uint64_t>(1), bufferSize))
+  , aliveFlag(kj::refcounted<AliveFlag>(this))
+  , tasks(*this) {
     setRestorer(restorer);
   }
 
-  ~Impl() = default;
+  ~Impl() {
+    // leases may still be out there; tell them there is nothing to come back to anymore
+    aliveFlag->impl = nullptr;
+  }
+
+  void taskFailed(kj::Exception&& exception) override {
+    KJ_LOG(INFO, "Channel::Impl: observer call failed", exception);
+  }
 
   void setRestorer(mas::infrastructure::common::Restorer* restorer) {
     if (restorer != nullptr) {
@@ -501,7 +667,8 @@ kj::Promise<void> Channel::closeChannel() {
 
 kj::Promise<void> Channel::close(CloseContext context) {
   KJ_LOG(INFO, "Channel::close: message received", context.getParams().getWaitForEmptyBuffer());
-  if (!context.getParams().getWaitForEmptyBuffer() || impl->buffer.empty()) {
+  if (!context.getParams().getWaitForEmptyBuffer()
+      || (impl->buffer.empty() && !impl->hasUnackedLeases())) {
     impl->closeChannelNow();
   } else {
     impl->channelShouldBeClosedOnEmptyBuffer = true;
@@ -509,6 +676,50 @@ kj::Promise<void> Channel::close(CloseContext context) {
     // no further writes are accepted from here on, so blocked writers would wait forever
     impl->releaseBlockedWriters();
   }
+  return kj::READY_NOW;
+}
+
+kj::Promise<void> Channel::observe(ObserveContext context) {
+  KJ_LOG(INFO, "Channel::observe: message received");
+  auto params = context.getParams();
+  auto observeParams = params.getParams();
+  auto id = kj::str(sole::uuid4().str());
+  impl->observers.insert(kj::str(id), Impl::ObserverReg{
+                           params.getCallback(),
+                           std::max(static_cast<uint32_t>(1), observeParams.getEveryNth()),
+                           observeParams.getWithContent(),
+                           observeParams.getGate(),
+                           false,
+                         });
+  context.getResults().setUnregister(kj::heap<Impl::UnregObserver>(impl->observers, id));
+  return kj::READY_NOW;
+}
+
+kj::Promise<void> Channel::pause(PauseContext context) {
+  KJ_LOG(INFO, "Channel::pause: message received");
+  impl->paused = true;
+  return kj::READY_NOW;
+}
+
+kj::Promise<void> Channel::resume(ResumeContext context) {
+  KJ_LOG(INFO, "Channel::resume: message received");
+  impl->paused = false;
+  impl->stepCredits = 0;
+  impl->deliverBufferedMsgsToWaitingReaders();
+  impl->unblockWaitingWritersWithBufferSpace();
+  return kj::READY_NOW;
+}
+
+kj::Promise<void> Channel::step(StepContext context) {
+  KJ_LOG(INFO, "Channel::step: message received", context.getParams().getCount());
+  // stepping a running channel pauses it first, so that it comes to a stop again afterwards
+  impl->paused = true;
+  impl->stepCredits += context.getParams().getCount();
+  const auto creditsBefore = impl->stepCredits;
+  impl->deliverBufferedMsgsToWaitingReaders();
+  // what could not be delivered right away stays as credit and is used up by the next reads
+  context.getResults().setDelivered(creditsBefore - impl->stepCredits);
+  impl->unblockWaitingWritersWithBufferSpace();
   return kj::READY_NOW;
 }
 
@@ -567,17 +778,20 @@ kj::Promise<void> Reader::read(ReadContext context) {
   auto& b = c.impl->buffer;
 
   // the buffer is not empty, send next value
-  if (!b.empty()) {
+  if (!b.empty() && c.impl->mayDeliver()) {
     KJ_LOG(INFO, "Reader::read: buffer not empty, send next value");
     auto v = kj::mv(b.back());
     b.pop_back();
     KJ_ASSERT(v->isValue(), "Msg contains a value, because before buffering we checked for done.");
     context.getResults().setValue(v->getValue());
 
+    c.impl->deliveryDone();
     c.impl->unblockWaitingWritersWithBufferSpace();
 
     // check if the channel is supposed to be closed and just waiting for an empty buffer
-    if (b.empty() && c.impl->channelShouldBeClosedOnEmptyBuffer) c.impl->closeChannelNow();
+    if (b.empty() && !c.impl->hasUnackedLeases() && c.impl->channelShouldBeClosedOnEmptyBuffer) {
+      c.impl->closeChannelNow();
+    }
 
     return kj::READY_NOW;
   }
@@ -587,8 +801,9 @@ kj::Promise<void> Reader::read(ReadContext context) {
     return kj::READY_NOW;
   }
 
-  // buffer is empty, but we are supposed to close down
-  if (c.impl->sendCloseOnEmptyBuffer) {
+  // buffer is empty, but we are supposed to close down; a message still out on lease may yet
+  // come back though, so only send done once none are outstanding
+  if (b.empty() && c.impl->sendCloseOnEmptyBuffer && !c.impl->hasUnackedLeases()) {
     KJ_LOG(INFO, "Reader::read: buffer is empty, but close down");
     context.getResults().setDone();
     c.closedReader(id());
@@ -631,24 +846,28 @@ kj::Promise<void> Reader::read(ReadContext context) {
          .attach(kj::mv(cancelGuard));
 }
 
-kj::Promise<void> Reader::readIfMsg(ReadIfMsgContext context) {
+kj::Promise<void> Reader::readLeased(ReadLeasedContext context) {
   KJ_REQUIRE(!_closed, "Reader already closed.", _closed);
 
   auto& c = _channel;
   auto& b = c.impl->buffer;
 
-  // the buffer is not empty, send next the value
-  if (!b.empty()) {
-    KJ_LOG(INFO, "Reader::readIfMsg: buffer not empty, send next value");
+  KJ_REQUIRE(!c.impl->hasUnackedLease(id()),
+             "Reader still holds a message which has not been acknowledged; acknowledge it "
+             "before reading the next one.", id());
+
+  // the buffer is not empty, send next value
+  if (!b.empty() && c.impl->mayDeliver()) {
+    KJ_LOG(INFO, "Reader::readLeased: buffer not empty, send next value");
     auto v = kj::mv(b.back());
     b.pop_back();
     KJ_ASSERT(v->isValue(), "Msg contains a value, because before buffering we checked for done.");
-    context.getResults().setValue(v->getValue());
+    auto rs = context.getResults();
+    rs.getMsg().setValue(v->getValue());
+    rs.setLease(c.impl->leaseMsg(id(), kj::mv(v)));
 
+    c.impl->deliveryDone();
     c.impl->unblockWaitingWritersWithBufferSpace();
-
-    // check if the channel is supposed to be closed and just waiting for an empty buffer
-    if (b.empty() && c.impl->channelShouldBeClosedOnEmptyBuffer) c.impl->closeChannelNow();
 
     return kj::READY_NOW;
   }
@@ -658,8 +877,82 @@ kj::Promise<void> Reader::readIfMsg(ReadIfMsgContext context) {
     return kj::READY_NOW;
   }
 
-  // buffer is empty, but we are supposed to close down
-  if (c.impl->sendCloseOnEmptyBuffer) {
+  // buffer is empty, but we are supposed to close down; a message still out on lease may yet
+  // come back though, so only send done once none are outstanding
+  if (b.empty() && c.impl->sendCloseOnEmptyBuffer && !c.impl->hasUnackedLeases()) {
+    KJ_LOG(INFO, "Reader::readLeased: buffer is empty, but close down");
+    context.getResults().getMsg().setDone();
+    c.closedReader(id());
+
+    // if there are other readers waiting close them as well
+    c.impl->sendDoneToWaitingReaders();
+
+    return kj::READY_NOW;
+  }
+
+  KJ_LOG(INFO, "Reader::readLeased: block, because no value to read");
+  auto paf = kj::newPromiseAndFulfiller<kj::Maybe<OwnMsg>>();
+  const auto waiterId = c.impl->addWaiter(c.impl->blockingReadFulfillers, kj::mv(paf.fulfiller));
+
+  // see Reader::read on why the waiter is identified by an id and not by its fulfiller
+  auto cancelGuard = kj::defer([this, waiterId]() {
+    if (removeWaiter(_channel.impl->blockingReadFulfillers, waiterId)) {
+      KJ_LOG(INFO, "Reader::readLeased: canceled, waiting reader removed from queue");
+    }
+  });
+
+  return kj::mv(paf.promise)
+         .then([context, this](kj::Maybe<OwnMsg> msg) mutable {
+           KJ_REQUIRE(!_closed, "Reader already closed.", _closed);
+
+           KJ_IF_MAYBE(m, msg) {
+             auto rs = context.getResults();
+             rs.getMsg().setValue((*m)->getValue());
+             rs.setLease(_channel.impl->leaseMsg(id(), kj::mv(*m)));
+             KJ_LOG(INFO, "Reader::readLeased: promise_lambda: sending value to reader");
+           } else {
+             // no message means the channel is closing down
+             context.getResults().getMsg().setDone();
+             KJ_LOG(INFO, "Reader::readLeased: promise_lambda: sending done to reader");
+             _channel.closedReader(id());
+           }
+         })
+         .attach(kj::mv(cancelGuard));
+}
+
+kj::Promise<void> Reader::readIfMsg(ReadIfMsgContext context) {
+  KJ_REQUIRE(!_closed, "Reader already closed.", _closed);
+
+  auto& c = _channel;
+  auto& b = c.impl->buffer;
+
+  // the buffer is not empty, send next the value
+  if (!b.empty() && c.impl->mayDeliver()) {
+    KJ_LOG(INFO, "Reader::readIfMsg: buffer not empty, send next value");
+    auto v = kj::mv(b.back());
+    b.pop_back();
+    KJ_ASSERT(v->isValue(), "Msg contains a value, because before buffering we checked for done.");
+    context.getResults().setValue(v->getValue());
+
+    c.impl->deliveryDone();
+    c.impl->unblockWaitingWritersWithBufferSpace();
+
+    // check if the channel is supposed to be closed and just waiting for an empty buffer
+    if (b.empty() && !c.impl->hasUnackedLeases() && c.impl->channelShouldBeClosedOnEmptyBuffer) {
+      c.impl->closeChannelNow();
+    }
+
+    return kj::READY_NOW;
+  }
+
+  // don't read if the channel is supposed to close
+  if (c.impl->channelCanBeClosed) {
+    return kj::READY_NOW;
+  }
+
+  // buffer is empty, but we are supposed to close down; a message still out on lease may yet
+  // come back though, so only send done once none are outstanding
+  if (b.empty() && c.impl->sendCloseOnEmptyBuffer && !c.impl->hasUnackedLeases()) {
     KJ_LOG(INFO, "Reader::readIfMsg: buffer is empty, but close down");
     context.getResults().setDone();
     c.closedReader(id());

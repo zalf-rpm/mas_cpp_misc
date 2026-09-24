@@ -65,6 +65,28 @@ struct TestChannel {
     return req.send().ignoreResult();
   }
 
+  kj::Promise<AnyPointerChannel::Observer::Unregister::Client>
+  observe(AnyPointerChannel::Observer::Client callback, uint32_t everyNth, bool withContent,
+          bool gate) {
+    auto req = _client.observeRequest();
+    req.setCallback(kj::mv(callback));
+    auto params = req.initParams();
+    params.setEveryNth(everyNth);
+    params.setWithContent(withContent);
+    params.setGate(gate);
+    return req.send().then([](auto&& res) { return res.getUnregister(); });
+  }
+
+  kj::Promise<void> pause() { return _client.pauseRequest().send().ignoreResult(); }
+
+  kj::Promise<void> resume() { return _client.resumeRequest().send().ignoreResult(); }
+
+  kj::Promise<uint64_t> step(uint64_t count) {
+    auto req = _client.stepRequest();
+    req.setCount(count);
+    return req.send().then([](auto&& res) { return res.getDelivered(); });
+  }
+
   kj::Promise<void> close(bool waitForEmptyBuffer) {
     auto req = _client.closeRequest();
     req.setWaitForEmptyBuffer(waitForEmptyBuffer);
@@ -158,6 +180,49 @@ void assertReceivedEachMessageOnce(kj::Vector<kj::String>& received, uint noOfWr
     }
   }
 }
+
+// records what it is told about, and can be made to answer only on request
+class TestObserver final : public AnyPointerChannel::Observer::Server {
+public:
+  struct Seen {
+    uint64_t seqNo;
+    kj::String content;
+  };
+
+  kj::Vector<Seen> seen;
+
+  enum class Answer { immediately, hold, fail };
+
+  explicit TestObserver(Answer answer = Answer::immediately) : _answer(answer) {}
+
+  kj::Promise<void> saw(SawContext context) override {
+    auto event = context.getParams().getEvent();
+    seen.add(Seen{event.getSeqNo(), event.hasContent() ? valueOf(event.getContent()) : kj::str()});
+    switch (_answer) {
+      case Answer::immediately: return kj::READY_NOW;
+      case Answer::fail: return KJ_EXCEPTION(FAILED, "this observer is broken");
+      case Answer::hold: {
+        // hold the call, so the channel has to wait for us
+        auto paf = kj::newPromiseAndFulfiller<void>();
+        _held.add(kj::mv(paf.fulfiller));
+        return kj::mv(paf.promise);
+      }
+    }
+    KJ_UNREACHABLE;
+  }
+
+  // let the channel carry on
+  void answerHeldCalls() {
+    for (auto& fulfiller : _held) fulfiller->fulfill();
+    _held.clear();
+  }
+
+  size_t heldCalls() const { return _held.size(); }
+
+private:
+  Answer _answer;
+  kj::Vector<kj::Own<kj::PromiseFulfiller<void>>> _held;
+};
 
 // ---------------------------------------------------------------------------------------- tests
 
@@ -415,6 +480,291 @@ void canceledReadAfterHandoverLosesTheMessage(kj::WaitScope& ws, kj::Timer& time
   KJ_ASSERT(!next.poll(ws), "channel unexpectedly kept the message - has read become acknowledged?");
 }
 
+// An acknowledged message is gone from the channel, like an ordinary read.
+void acknowledgedLeaseConsumesTheMessage(kj::WaitScope& ws, kj::Timer& timer) {
+  TestChannel channel(1, timer);
+  auto reader = channel.reader(ws);
+  write(channel.writer(ws), "only one").wait(ws);
+
+  {
+    auto leased = reader.readLeasedRequest().send().wait(ws);
+    KJ_ASSERT(leased.getMsg().isValue());
+    KJ_ASSERT(valueOf(leased.getMsg().getValue()) == "only one");
+    leased.getLease().ackRequest().send().wait(ws);
+  }
+  ws.poll();
+
+  auto next = reader.readRequest().send();
+  KJ_ASSERT(!next.poll(ws), "an acknowledged message came back into the channel");
+}
+
+// The point of the whole thing: a reader that never acknowledges - because the call was canceled,
+// because it died, because the connection broke - does not take the message down with it.
+void unacknowledgedLeaseReturnsTheMessage(kj::WaitScope& ws, kj::Timer& timer) {
+  TestChannel channel(1, timer);
+  auto reader = channel.reader(ws);
+  write(channel.writer(ws), "only one").wait(ws);
+
+  {
+    auto leased = reader.readLeasedRequest().send().wait(ws);
+    KJ_ASSERT(valueOf(leased.getMsg().getValue()) == "only one");
+    // the reader drops the lease without ever acknowledging it
+  }
+  ws.poll();
+
+  auto again = reader.readRequest().send();
+  KJ_ASSERT(again.poll(ws), "message was not given back to the channel");
+  KJ_ASSERT(valueOf(again.wait(ws).getValue()) == "only one");
+}
+
+// A returning message keeps its place, it does not overtake or fall behind.
+void returnedMessageKeepsItsPlaceInTheQueue(kj::WaitScope& ws, kj::Timer& timer) {
+  TestChannel channel(3, timer);
+  auto reader = channel.reader(ws);
+  writeSeq(channel.writer(ws), kj::str("msg"), 3).wait(ws);
+
+  {
+    auto leased = reader.readLeasedRequest().send().wait(ws);
+    KJ_ASSERT(valueOf(leased.getMsg().getValue()) == "msg-0");
+  }
+  ws.poll();
+
+  kj::Vector<kj::String> received;
+  readSeq(reader, 3, received).wait(ws);
+  KJ_ASSERT(received.size() == 3, received.size());
+  KJ_ASSERT(received[0] == "msg-0", received[0]);
+  KJ_ASSERT(received[1] == "msg-1", received[1]);
+  KJ_ASSERT(received[2] == "msg-2", received[2]);
+}
+
+// A returned message has to reach a reader which started waiting in the meantime.
+void returnedMessageReachesAWaitingReader(kj::WaitScope& ws, kj::Timer& timer) {
+  TestChannel channel(1, timer);
+  auto leasingReader = channel.reader(ws);
+  auto waitingReader = channel.reader(ws);
+  write(channel.writer(ws), "only one").wait(ws);
+
+  auto leased = leasingReader.readLeasedRequest().send().wait(ws);
+  KJ_ASSERT(valueOf(leased.getMsg().getValue()) == "only one");
+
+  auto waiting = waitingReader.readRequest().send();
+  ws.poll();
+  KJ_ASSERT(!waiting.poll(ws), "the other reader should be waiting on the empty channel");
+
+  { auto dropped = kj::mv(leased); } // released without an ack
+  ws.poll();
+
+  KJ_ASSERT(waiting.poll(ws), "returned message did not reach the waiting reader");
+  KJ_ASSERT(valueOf(waiting.wait(ws).getValue()) == "only one");
+}
+
+// Only one message may be out on lease per reader, so that a returning one keeps its place.
+void readerMayOnlyHoldOneUnacknowledgedLease(kj::WaitScope& ws, kj::Timer& timer) {
+  TestChannel channel(2, timer);
+  auto reader = channel.reader(ws);
+  writeSeq(channel.writer(ws), kj::str("msg"), 2).wait(ws);
+
+  auto leased = reader.readLeasedRequest().send().wait(ws);
+  KJ_ASSERT(valueOf(leased.getMsg().getValue()) == "msg-0");
+
+  KJ_IF_MAYBE(e, kj::runCatchingExceptions([&]() {
+    reader.readLeasedRequest().send().wait(ws);
+  })) {
+    KJ_ASSERT(kj::StringPtr(e->getDescription()).findFirst('a') != nullptr, kj::str(*e));
+  } else {
+    KJ_FAIL_ASSERT("a second unacknowledged lease should have been refused");
+  }
+
+  // after acknowledging, reading continues normally
+  leased.getLease().ackRequest().send().wait(ws);
+  auto next = reader.readLeasedRequest().send().wait(ws);
+  KJ_ASSERT(valueOf(next.getMsg().getValue()) == "msg-1");
+  next.getLease().ackRequest().send().wait(ws);
+}
+
+// The channel must not report itself done while a message is still out on lease: it may yet come
+// back, and a reader told "done" would never ask for it again.
+void doneWaitsForOutstandingLeases(kj::WaitScope& ws, kj::Timer& timer) {
+  TestChannel channel(1, timer);
+  auto reader = channel.reader(ws);
+  auto writer = channel.writer(ws);
+  write(writer, "only one").wait(ws);
+
+  auto leased = reader.readLeasedRequest().send().wait(ws);
+  KJ_ASSERT(valueOf(leased.getMsg().getValue()) == "only one");
+
+  writeDone(writer).wait(ws); // last writer gone, but the message is still out
+  auto pendingRead = channel.reader(ws).readRequest().send();
+  ws.poll();
+  KJ_ASSERT(!pendingRead.poll(ws), "reader was told done while a message was still out on lease");
+
+  { auto dropped = kj::mv(leased); } // never acknowledged -> comes back
+  ws.poll();
+
+  KJ_ASSERT(pendingRead.poll(ws), "returned message did not reach the waiting reader");
+  KJ_ASSERT(valueOf(pendingRead.wait(ws).getValue()) == "only one");
+}
+
+// A paused channel stops delivering, but keeps taking messages in until its buffer is full -
+// so pausing back-pressures the upstream instead of losing anything.
+void pausedChannelStopsDeliveringButKeepsAccepting(kj::WaitScope& ws, kj::Timer& timer) {
+  TestChannel channel(2, timer);
+  auto reader = channel.reader(ws);
+  channel.pause().wait(ws);
+
+  writeSeq(channel.writer(ws), kj::str("msg"), 2).wait(ws); // both accepted into the buffer
+  auto read = reader.readRequest().send();
+  ws.poll();
+  KJ_ASSERT(!read.poll(ws), "a paused channel delivered a message");
+
+  channel.resume().wait(ws);
+  KJ_ASSERT(read.poll(ws), "resuming did not deliver the buffered message");
+  KJ_ASSERT(valueOf(read.wait(ws).getValue()) == "msg-0");
+
+  kj::Vector<kj::String> rest;
+  readSeq(reader, 1, rest).wait(ws);
+  KJ_ASSERT(rest[0] == "msg-1", rest[0]);
+}
+
+// Stepping lets exactly as many messages through as asked for and stops again.
+void stepLetsThroughExactlyOneMessage(kj::WaitScope& ws, kj::Timer& timer) {
+  TestChannel channel(3, timer);
+  auto reader = channel.reader(ws);
+  channel.pause().wait(ws);
+  writeSeq(channel.writer(ws), kj::str("msg"), 3).wait(ws);
+
+  auto first = reader.readRequest().send();
+  ws.poll();
+  KJ_ASSERT(!first.poll(ws), "paused channel delivered without a step");
+
+  KJ_ASSERT(channel.step(1).wait(ws) == 1, "step should have delivered one message");
+  KJ_ASSERT(first.poll(ws), "step did not deliver to the waiting reader");
+  KJ_ASSERT(valueOf(first.wait(ws).getValue()) == "msg-0");
+
+  auto second = reader.readRequest().send();
+  ws.poll();
+  KJ_ASSERT(!second.poll(ws), "the channel did not stop again after the step");
+
+  KJ_ASSERT(channel.step(2).wait(ws) == 1, "only one reader was waiting, so one could be delivered");
+  KJ_ASSERT(second.poll(ws));
+  KJ_ASSERT(valueOf(second.wait(ws).getValue()) == "msg-1");
+
+  // the credit left over from the step of 2 is used up by the next read
+  auto third = reader.readRequest().send();
+  KJ_ASSERT(third.poll(ws), "the left over step credit was not used by the next read");
+  KJ_ASSERT(valueOf(third.wait(ws).getValue()) == "msg-2");
+
+  auto fourth = reader.readRequest().send();
+  ws.poll();
+  KJ_ASSERT(!fourth.poll(ws), "the channel should be paused again with no credits left");
+}
+
+// Stepping a running channel pauses it, so a UI can grab hold of a flow at any moment.
+void stepPausesARunningChannel(kj::WaitScope& ws, kj::Timer& timer) {
+  TestChannel channel(2, timer);
+  auto reader = channel.reader(ws);
+  writeSeq(channel.writer(ws), kj::str("msg"), 2).wait(ws);
+
+  KJ_ASSERT(channel.step(1).wait(ws) == 0, "no reader was waiting, so nothing could be delivered");
+
+  auto first = reader.readRequest().send();
+  KJ_ASSERT(first.poll(ws), "the step credit should have let one message through");
+  KJ_ASSERT(valueOf(first.wait(ws).getValue()) == "msg-0");
+
+  auto second = reader.readRequest().send();
+  ws.poll();
+  KJ_ASSERT(!second.poll(ws), "stepping should have left the channel paused");
+}
+
+// A best effort observer sees what travels through, without being part of the flow.
+void observerSeesTheMessages(kj::WaitScope& ws, kj::Timer& timer) {
+  TestChannel channel(4, timer);
+  auto reader = channel.reader(ws);
+  auto observer = kj::heap<TestObserver>();
+  auto* observerPtr = observer.get();
+  AnyPointerChannel::Observer::Client observerClient = kj::mv(observer);
+  auto unregister = channel.observe(observerClient, 1, true, false).wait(ws);
+
+  writeSeq(channel.writer(ws), kj::str("msg"), 3).wait(ws);
+  kj::Vector<kj::String> received;
+  readSeq(reader, 3, received).wait(ws);
+  ws.poll();
+
+  KJ_ASSERT(observerPtr->seen.size() == 3, observerPtr->seen.size());
+  for (uint i = 0; i < 3; i++) {
+    KJ_ASSERT(observerPtr->seen[i].seqNo == i + 1, observerPtr->seen[i].seqNo);
+    KJ_ASSERT(observerPtr->seen[i].content == kj::str("msg-", i), observerPtr->seen[i].content);
+  }
+  KJ_ASSERT(received.size() == 3, "observing must not disturb the flow");
+
+  // after unregistering nothing is reported anymore
+  unregister.unregRequest().send().wait(ws);
+  write(channel.writer(ws), "after").wait(ws);
+  readSeq(reader, 1, received).wait(ws);
+  ws.poll();
+  KJ_ASSERT(observerPtr->seen.size() == 3, "an unregistered observer was still called");
+}
+
+// everyNth thins out what is reported, for a log that should not drown in messages.
+void observerCanSampleEveryNthMessage(kj::WaitScope& ws, kj::Timer& timer) {
+  TestChannel channel(10, timer);
+  auto reader = channel.reader(ws);
+  auto observer = kj::heap<TestObserver>();
+  auto* observerPtr = observer.get();
+  AnyPointerChannel::Observer::Client observerClient = kj::mv(observer);
+  auto unregister = channel.observe(observerClient, 3, false, false).wait(ws);
+
+  writeSeq(channel.writer(ws), kj::str("msg"), 9).wait(ws);
+  kj::Vector<kj::String> received;
+  readSeq(reader, 9, received).wait(ws);
+  ws.poll();
+
+  KJ_ASSERT(observerPtr->seen.size() == 3, observerPtr->seen.size());
+  KJ_ASSERT(observerPtr->seen[0].seqNo == 3, observerPtr->seen[0].seqNo);
+  KJ_ASSERT(observerPtr->seen[1].seqNo == 6, observerPtr->seen[1].seqNo);
+  KJ_ASSERT(observerPtr->seen[2].seqNo == 9, observerPtr->seen[2].seqNo);
+  KJ_ASSERT(observerPtr->seen[0].content == "", "content must be left out unless it was asked for");
+}
+
+// A gating observer holds the message back for as long as it does not answer - which is what
+// stepping through a flow from a debugger comes down to.
+void gatingObserverHoldsTheMessageBack(kj::WaitScope& ws, kj::Timer& timer) {
+  TestChannel channel(2, timer);
+  auto reader = channel.reader(ws);
+  auto observer = kj::heap<TestObserver>(TestObserver::Answer::hold);
+  auto* observerPtr = observer.get();
+  AnyPointerChannel::Observer::Client observerClient = kj::mv(observer);
+  auto unregister = channel.observe(observerClient, 1, false, true).wait(ws);
+
+  write(channel.writer(ws), "held").wait(ws);
+  auto read = reader.readRequest().send();
+  ws.poll();
+
+  KJ_ASSERT(observerPtr->seen.size() == 1, "the observer should have been told about the message");
+  KJ_ASSERT(observerPtr->heldCalls() == 1, "the observer should be holding the call");
+  KJ_ASSERT(!read.poll(ws), "the message was delivered although the observer had not answered");
+
+  observerPtr->answerHeldCalls();
+  KJ_ASSERT(read.poll(ws), "answering the observer did not release the message");
+  KJ_ASSERT(valueOf(read.wait(ws).getValue()) == "held");
+}
+
+// A gating observer which goes away may not hold the channel up forever.
+void brokenGatingObserverDoesNotBlockTheChannel(kj::WaitScope& ws, kj::Timer& timer) {
+  TestChannel channel(2, timer);
+  auto reader = channel.reader(ws);
+
+  auto unregister = channel.observe(kj::heap<TestObserver>(TestObserver::Answer::fail), 1, false,
+                                    true).wait(ws);
+
+  write(channel.writer(ws), "msg").wait(ws);
+  auto read = reader.readRequest().send();
+  ws.poll();
+
+  KJ_ASSERT(read.poll(ws), "a failing gating observer left the channel blocked");
+  KJ_ASSERT(valueOf(read.wait(ws).getValue()) == "msg");
+}
+
 // The channel must not tell a reader that the writers are done while there are still buffered
 // messages, neither for a reader asking afterwards nor for one already waiting.
 void doneIsSentOnlyAfterTheBufferIsEmpty(kj::WaitScope& ws, kj::Timer& timer) {
@@ -555,6 +905,19 @@ const Test TESTS[] = {
   {"canceledReadLeavesOtherReadersAlone", &canceledReadLeavesOtherReadersAlone},
   {"canceledCallsDoNotWedgeTheChannel", &canceledCallsDoNotWedgeTheChannel},
   {"canceledReadAfterHandoverLosesTheMessage", &canceledReadAfterHandoverLosesTheMessage},
+  {"acknowledgedLeaseConsumesTheMessage", &acknowledgedLeaseConsumesTheMessage},
+  {"unacknowledgedLeaseReturnsTheMessage", &unacknowledgedLeaseReturnsTheMessage},
+  {"returnedMessageKeepsItsPlaceInTheQueue", &returnedMessageKeepsItsPlaceInTheQueue},
+  {"returnedMessageReachesAWaitingReader", &returnedMessageReachesAWaitingReader},
+  {"readerMayOnlyHoldOneUnacknowledgedLease", &readerMayOnlyHoldOneUnacknowledgedLease},
+  {"doneWaitsForOutstandingLeases", &doneWaitsForOutstandingLeases},
+  {"pausedChannelStopsDeliveringButKeepsAccepting", &pausedChannelStopsDeliveringButKeepsAccepting},
+  {"stepLetsThroughExactlyOneMessage", &stepLetsThroughExactlyOneMessage},
+  {"stepPausesARunningChannel", &stepPausesARunningChannel},
+  {"observerSeesTheMessages", &observerSeesTheMessages},
+  {"observerCanSampleEveryNthMessage", &observerCanSampleEveryNthMessage},
+  {"gatingObserverHoldsTheMessageBack", &gatingObserverHoldsTheMessageBack},
+  {"brokenGatingObserverDoesNotBlockTheChannel", &brokenGatingObserverDoesNotBlockTheChannel},
   {"doneIsSentOnlyAfterTheBufferIsEmpty", &doneIsSentOnlyAfterTheBufferIsEmpty},
   {"waitingReaderIsClosedDown", &waitingReaderIsClosedDown},
   {"growingTheBufferUnblocksWriters", &growingTheBufferUnblocksWriters},

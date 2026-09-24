@@ -61,6 +61,14 @@ public:
 
   kj::Promise<void> close(CloseContext context) override;
 
+  kj::Promise<void> observe(ObserveContext context) override;
+
+  kj::Promise<void> pause(PauseContext context) override;
+
+  kj::Promise<void> resume(ResumeContext context) override;
+
+  kj::Promise<void> step(StepContext context) override;
+
   kj::Promise<void> registerStatsCallback(RegisterStatsCallbackContext context) override;
 
   kj::Promise<void> sendStats();
@@ -94,6 +102,8 @@ public:
   kj::Promise<void> save(SaveContext context) override;
 
   kj::Promise<void> read(ReadContext context) override;
+
+  kj::Promise<void> readLeased(ReadLeasedContext context) override;
 
   kj::Promise<void> readIfMsg(ReadIfMsgContext context) override;
 
