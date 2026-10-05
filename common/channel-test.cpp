@@ -45,6 +45,8 @@ using namespace mas::infrastructure::common;
 
 namespace {
 
+typedef unsigned int uint; // not provided by the MSVC headers, unlike glibc
+
 typedef AnyPointerChannel::ChanReader::Client ReaderClient;
 typedef AnyPointerChannel::ChanWriter::Client WriterClient;
 
