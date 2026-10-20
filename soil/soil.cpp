@@ -22,6 +22,7 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include <iostream>
 #include <fstream>
 #include <cmath>
+#include "cr_math.h"
 #include <utility>
 #include <mutex>
 
@@ -869,7 +870,7 @@ FcSatPwp fcSatPwpFromVanGenuchtenVereecken(double sandFrac,
   else if (clayFrac > 0.08 && sandFrac < 0.27) fc_pF = 2.2;
   else if (clayFrac > 0.25 && sandFrac < 0.25) fc_pF = 2.2;
 
-  double matricHead = pow(10, fc_pF);
+  double matricHead = cr::pow(10, fc_pF);
 
   auto vgps = calcVanGenuchtenVereeckenParams(res.pwp, res.sat, sandFrac, clayFrac,
                                               bulkDensityKgPerM3, organicCarbonFrac, stoneFrac, matricHead);
@@ -960,21 +961,21 @@ VanGenuchtenParams Soil::calcVanGenuchtenVereeckenParams(double pwp, double sat,
   VanGenuchtenParams res;
   res.thetaR = pwp;
   res.thetaS = sat;
-  res.alpha = exp(-2.486
+  res.alpha = cr::exp(-2.486
                   + 2.5 * sandFrac
                   - 35.1 * organicCarbonFrac
                   - 2.617 * (bulkDensityKgPerM3 / 1000.0)
                   - 2.3 * clayFrac);
 
   res.m = 1.0;
-  res.n = exp(0.053
+  res.n = cr::exp(0.053
               - 0.9 * sandFrac
               - 1.3 * clayFrac
-              + 1.5 * (pow(sandFrac, 2.0)));
+              + 1.5 * (cr::pow(sandFrac, 2.0)));
 
   if (stoneFrac >= 0)
     res.volumetricWaterContentAtMatricHead = (res.thetaR + ((res.thetaS - res.thetaR) /
-                                                            (pow(1.0 + pow(res.alpha * matricHead, res.n), res.m))))
+                                                            (cr::pow(1.0 + cr::pow(res.alpha * matricHead, res.n), res.m))))
                                              * (1.0 - stoneFrac);
   return res;
 }
@@ -998,13 +999,13 @@ VanGenuchtenParams Soil::calcVanGenuchtenTothParams(bool isTopSoil,
   else if (sandContentPerc < 20) res.thetaR = 0.179;
   res.thetaS = 0.8308 - 0.28217 * soilBulkDensityGPerCm3 + 0.0002728 * clayContentPerc + 0.000187 * siltContentPerc;
 
-  res.alpha = pow(10, -0.43348
+  res.alpha = cr::pow(10, -0.43348
                       - 0.41729 * soilBulkDensityGPerCm3
                       - 0.04762 * soilOrganicCarbonPerc
                       - 0.2181 * (isTopSoil ? 1 : 0)
                       - 0.01581 * clayContentPerc
                       - 0.01207 * siltContentPerc);
-  res.n = pow(10, 0.22236
+  res.n = cr::pow(10, 0.22236
                   - 0.30189 * soilBulkDensityGPerCm3
                   - 0.05558 * (isTopSoil ? 1 : 0)
                   - 0.005306 * clayContentPerc
@@ -1015,7 +1016,7 @@ VanGenuchtenParams Soil::calcVanGenuchtenTothParams(bool isTopSoil,
   //***** Van Genuchten Toth retention curve to calculate volumetric water content at
   //***** moisture equivalent, Field capacity and wilting point
   res.volumetricWaterContentAtMatricHead = (res.thetaR + ((res.thetaS - res.thetaR) /
-                                                          (pow(1.0 + pow(res.alpha * abs(matricHead), res.n), res.m))))
+                                                          (cr::pow(1.0 + cr::pow(res.alpha * abs(matricHead), res.n), res.m))))
                                            * (1.0 - stoneFrac);
   return res;
 }

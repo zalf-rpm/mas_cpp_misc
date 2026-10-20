@@ -22,6 +22,7 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include <set>
 #include <string>
 #include <cmath>
+#include "cr_math.h"
 #include <algorithm>
 #include <utility>
 #include <numeric>
@@ -334,12 +335,12 @@ int integerRound1stDigit(int value);
 
 template <typename ReturnType>
 inline ReturnType shiftDecimalPointRight(double value, uint8_t digits) {
-  return ReturnType(value * pow(10.0, digits));
+  return ReturnType(value * cr::pow(10.0, digits));
 }
 
 template <typename ReturnType>
 inline ReturnType shiftDecimalPointLeft(double value, uint8_t digits) {
-  return ReturnType(value / pow(10.0, digits));
+  return ReturnType(value / cr::pow(10.0, digits));
 }
 
 //round to int but keep shifted to roundToDigits

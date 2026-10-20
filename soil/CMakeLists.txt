@@ -18,6 +18,11 @@ if(NOT TARGET capnp_schemas_lib)
     add_subdirectory(../mas_capnproto_schemas/gen/c++ capnproto_schemas)
 endif()
 
+if(NOT TARGET cr_math_lib)
+    message(STATUS "target: cr_math_lib")
+    add_subdirectory(../cr_math cr_math)
+endif()
+
 add_library(soil_lib 
     STATIC 
     constants.h 
@@ -29,6 +34,7 @@ add_library(soil_lib
 )
 target_link_libraries(soil_lib 
     PUBLIC
+    cr_math_lib
     json11_lib
     capnp_schemas_lib
     helpers_lib 

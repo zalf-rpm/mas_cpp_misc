@@ -17,6 +17,7 @@ Copyright (C) Leibniz Centre for Agricultural Landscape Research (ZALF)
 #include "algorithms.h"
 
 #include <cmath>
+#include "cr_math.h"
 #include <ctime>
 #include <cstdlib>
 #include <algorithm>
@@ -147,14 +148,14 @@ string Tools::decapitalize(const string& s) {
 
 double Tools::sunshine2globalRadiation(int julianDay, double sunHours, double lat,
                                        bool asMJpm2pd) {
-  double pi = 4.0 * atan(1.0);
-  double dec = -23.4 * cos(2 * pi * (julianDay + 10) / 365);
-  double sinld = sin(dec * pi / 180) * sin(lat * pi / 180);
-  double cosld = cos(dec * pi / 180) * cos(lat * pi / 180);
-  double dl = 12 * (pi + 2 * asin(sinld / cosld)) / pi;
-  double dle = 12 * (pi + 2 * asin((-sin(8 * pi / 180) + sinld) / cosld)) / pi;
+  double pi = 4.0 * cr::atan(1.0);
+  double dec = -23.4 * cr::cos(2 * pi * (julianDay + 10) / 365);
+  double sinld = cr::sin(dec * pi / 180) * cr::sin(lat * pi / 180);
+  double cosld = cr::cos(dec * pi / 180) * cr::cos(lat * pi / 180);
+  double dl = 12 * (pi + 2 * cr::asin(sinld / cosld)) / pi;
+  double dle = 12 * (pi + 2 * cr::asin((-cr::sin(8 * pi / 180) + sinld) / cosld)) / pi;
   double rdn = 3600 * (sinld * dl + 24 / pi * cosld * sqrt(1.0 - (sinld / cosld) * (sinld / cosld)));
-  double drc = 1300 * rdn * exp(-0.14 / (rdn / (dl * 3600)));
+  double drc = 1300 * rdn * cr::exp(-0.14 / (rdn / (dl * 3600)));
   double dro = 0.2 * drc;
   double dtga = sunHours / dle * drc + (1 - sunHours / dle) * dro;
   double t = dtga / 10000.0;
@@ -169,7 +170,7 @@ double Tools::cloudAmount2globalRadiation(int doy,
                                           double lat, //[°]
                                           double hh, //[m]
                                           bool asMJpm2pd) {
-  static const double pi = 4.0 * atan(1.0);
+  static const double pi = 4.0 * cr::atan(1.0);
   static const double s0 = 1367; //Wm-2
   static const double a = 0.50572;
   static const double b = 607995;
@@ -180,20 +181,20 @@ double Tools::cloudAmount2globalRadiation(int doy,
   static const double albh = 0.2;
   static const double alph = 0;
   static const double azh = 0;
-  static const double swf = cos(alph / 2.0) * cos(alph / 2.0);
+  static const double swf = cr::cos(alph / 2.0) * cr::cos(alph / 2.0);
 
   //Datum	27.06.2009
   double enc = nn / 8.0;
   double phi = lat * pi / 180.0;
   double theta0 = 2.0 * pi * doy / 365.0;
   double xx = pi * (0.9856 * doy - 2.72) / 180.0;
-  double rrq = 1.0 + 0.0344 * cos(xx);
+  double rrq = 1.0 + 0.0344 * cr::cos(xx);
   double i0 = s0 * rrq;
-  double delta = 0.006918 - 0.3999912 * cos(theta0) +
-                 0.070257 * sin(theta0) - 0.006758 * cos(2 * theta0) +
-                 0.000907 * sin(2 * theta0) - 0.002697 * cos(3 * theta0) +
-                 0.00148 * sin(theta0 * 3);
-  double pp0 = exp(-hh / 8434.5);
+  double delta = 0.006918 - 0.3999912 * cr::cos(theta0) +
+                 0.070257 * cr::sin(theta0) - 0.006758 * cr::cos(2 * theta0) +
+                 0.000907 * cr::sin(2 * theta0) - 0.002697 * cr::cos(3 * theta0) +
+                 0.00148 * cr::sin(theta0 * 3);
+  double pp0 = cr::exp(-hh / 8434.5);
 
   double rgsum = 0; //[0,5 Wh m-2] pro d
   //	cout << "rgsum: 0 ";
@@ -201,20 +202,20 @@ double Tools::cloudAmount2globalRadiation(int doy,
     double t = 24.0 * (double(hs) - 1.0) / 48.0;
     //double zeit = t;
     double th = pi * (t - 12.0) / 12.0;
-    double ctheta = sin(delta) * sin(phi) + cos(delta) * cos(phi) * cos(th);
-    double theta = acos(ctheta);
+    double ctheta = cr::sin(delta) * cr::sin(phi) + cr::cos(delta) * cr::cos(phi) * cr::cos(th);
+    double theta = cr::acos(ctheta);
     //double hsonne = pi / 2.0 - theta;
     double hdeg = 90.0 - (theta * 180.0 / pi);
-    double gfaktor = cos(alph) * ctheta +
-                     sin(alph) * (cos(azh) *
-                                  (tan(phi) * ctheta - sin(delta) / cos(phi)) +
-                                  sin(azh) * cos(delta) * sin(th));
-    double m = 1.0 / (ctheta + a * pow(hdeg + b, -c));
-    double tl = 3.9 - 1.4 * cos(2 * pi * (doy - 15.0) / 365.0);
+    double gfaktor = cr::cos(alph) * ctheta +
+                     cr::sin(alph) * (cr::cos(azh) *
+                                  (cr::tan(phi) * ctheta - cr::sin(delta) / cr::cos(phi)) +
+                                  cr::sin(azh) * cr::cos(delta) * cr::sin(th));
+    double m = 1.0 / (ctheta + a * cr::pow(hdeg + b, -c));
+    double tl = 3.9 - 1.4 * cr::cos(2 * pi * (doy - 15.0) / 365.0);
     double dr0 = hdeg > 0.5 ? 1.0 / (0.9 * m + 9.4) : 0.0408 + hdeg * 0.0028;
-    double id0 = ctheta < 0 ? 0 : i0 * exp(-tl * dr0 * m * pp0);
+    double id0 = ctheta < 0 ? 0 : i0 * cr::exp(-tl * dr0 * m * pp0);
     double id = ctheta < 0 ? 0 : (1.0 - enc) * id0;
-    double rg0 = 0.9 * i0 * ctheta * exp(-0.027 * pp0 * tl / ctheta);
+    double rg0 = 0.9 * i0 * ctheta * cr::exp(-0.027 * pp0 * tl / ctheta);
     //double rg = ctheta < 0 ? 0 : rg0 * (1.0 - 0.72 * pow(enc, 3.2));
     //double sh = ctheta < 0 ? 0 : id * ctheta;
     double d0 = rg0 - id0 * ctheta;
@@ -260,51 +261,51 @@ double Tools::hourlyT(double tmin, double tmax, int h, int sunrise_h) {
   if (h < sunrise_h) H_1 = h + 10.0;
   else if (h > 14.0) H_1 = h - 14.0;
 
-  if (h < sunrise_h || h > 14.0) hourly_T = tavg + amp_ * (cos(M_PI * H_1 / (10.0 + sunrise_h)));
-  else hourly_T = tavg - amp_ * (cos(M_PI * (h - sunrise_h) / (14.0 - sunrise_h)));
+  if (h < sunrise_h || h > 14.0) hourly_T = tavg + amp_ * (cr::cos(M_PI * H_1 / (10.0 + sunrise_h)));
+  else hourly_T = tavg - amp_ * (cr::cos(M_PI * (h - sunrise_h) / (14.0 - sunrise_h)));
 
   return hourly_T;
 }
 
 double Tools::hourlyVaporPressureDeficit(double hourlyTemperature, double dailyTmin, double dailyTavg,
                                          double dailyTmax) {
-  double saturationVapourPressureHourly = 0.6108 * exp(17.27 * hourlyTemperature / (hourlyTemperature + 237.3));
+  double saturationVapourPressureHourly = 0.6108 * cr::exp(17.27 * hourlyTemperature / (hourlyTemperature + 237.3));
 
   double dewPointTemperatureHourly =
     -0.0360 * dailyTavg + 0.9679 * dailyTmin + 0.0072 * (dailyTmax - dailyTmin) + 1.0019;
 
   double actualVapourPressureHourly =
-    0.6108 * exp(17.27 * dewPointTemperatureHourly / (dewPointTemperatureHourly + 237.3));
+    0.6108 * cr::exp(17.27 * dewPointTemperatureHourly / (dewPointTemperatureHourly + 237.3));
 
   return saturationVapourPressureHourly - actualVapourPressureHourly;
 }
 
 double Tools::solarDeclination(int dayOfTheYear) {
-  return (-0.4093 * cos(2.0 * M_PI * (double(dayOfTheYear) + 10.0) / 365.0));
+  return (-0.4093 * cr::cos(2.0 * M_PI * (double(dayOfTheYear) + 10.0) / 365.0));
 }
 
 double Tools::solarElevation(int hour, double latitude, int dayOfTheYear) {
   double lat_rad = latitude * M_PI / 180.0;
 
   double dDecl = solarDeclination(dayOfTheYear);
-  double dA = sin(dDecl) * sin(lat_rad);
-  double dB = cos(dDecl) * cos(lat_rad);
+  double dA = cr::sin(dDecl) * cr::sin(lat_rad);
+  double dB = cr::cos(dDecl) * cr::cos(lat_rad);
   double dHa = M_PI * (double(hour) - 12) / 12;
-  return (asin(dA + dB * cos(dHa))); // can be -ve
+  return (cr::asin(dA + dB * cr::cos(dHa))); // can be -ve
 }
 
 double Tools::hourlyRad(double globrad, double lat, int doy, int h) {
   double dDecl = solarDeclination(doy);
   double lat_rad = lat * M_PI / 180.0;
 
-  double dA = sin(dDecl) * sin(lat_rad);
-  double dB = cos(dDecl) * cos(lat_rad);
+  double dA = cr::sin(dDecl) * cr::sin(lat_rad);
+  double dB = cr::cos(dDecl) * cr::cos(lat_rad);
   double dAoB = dA / dB;
-  double dPhi = (M_PI * globrad / 86400.0) / (dA * acos(-dAoB) + dB * sqrt(1 - dAoB * dAoB));
+  double dPhi = (M_PI * globrad / 86400.0) / (dA * cr::acos(-dAoB) + dB * sqrt(1 - dAoB * dAoB));
   double dCoefA = -dB * dPhi;
   double dCoefB = dA * dPhi;
 
-  double dTotrad = std::max((dCoefA * cos(M_PI * h / 12.0) + dCoefB) * 3600, 0.0);
+  double dTotrad = std::max((dCoefA * cr::cos(M_PI * h / 12.0) + dCoefB) * 3600, 0.0);
 
   return dTotrad;
 }
@@ -649,13 +650,13 @@ int Tools::roundShiftedInt(double value, int8_t roundToDigits) {
 }
 
 double Tools::floor(double value, int digits, bool trailingDigits) {
-  if (trailingDigits) return std::floor(value * std::pow(double(10), digits)) / std::pow(double(10), digits);
-  return std::floor(value / std::pow(double(10), digits)) * std::pow(double(10), digits);
+  if (trailingDigits) return std::floor(value * cr::pow(double(10), digits)) / cr::pow(double(10), digits);
+  return std::floor(value / cr::pow(double(10), digits)) * cr::pow(double(10), digits);
 }
 
 double Tools::ceil(double value, int digits, bool trailingDigits) {
-  if (trailingDigits) return std::ceil(value * std::pow(double(10), digits)) / std::pow(double(10), digits);
-  return std::ceil(value / std::pow(double(10), digits)) * std::pow(double(10), digits);
+  if (trailingDigits) return std::ceil(value * cr::pow(double(10), digits)) / cr::pow(double(10), digits);
+  return std::ceil(value / cr::pow(double(10), digits)) * cr::pow(double(10), digits);
 }
 
 void Tools::testRoundFloorCeil() {

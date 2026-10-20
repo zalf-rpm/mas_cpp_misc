@@ -3,6 +3,11 @@ project(Util-tools-helpers)
 
 message(STATUS "-> MAS-infrastructure-tools-helpers")
 
+if(NOT TARGET cr_math_lib)
+	message(STATUS "target: cr_math_lib")
+	add_subdirectory(../../cr_math cr_math)
+endif()
+
 add_library(helpers_lib 
 	STATIC 
 	../helper.h 
@@ -11,6 +16,7 @@ add_library(helpers_lib
 	../algorithms.cpp 
 	../datastructures.h
 )
+target_link_libraries(helpers_lib PUBLIC cr_math_lib)
 
 target_include_directories(helpers_lib 
 	PUBLIC 

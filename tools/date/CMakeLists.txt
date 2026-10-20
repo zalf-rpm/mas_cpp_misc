@@ -11,11 +11,17 @@ if(CAPNPROTO_SERIALIZATION_SUPPORT AND NOT TARGET capnp_schemas_lib)
     add_subdirectory(../mas_capnproto_schemas/gen/c++ capnproto_schemas)
 endif()
 
+if(NOT TARGET cr_math_lib)
+    message(STATUS "target: cr_math_lib")
+    add_subdirectory(../../cr_math cr_math)
+endif()
+
 add_library(date_lib 
     STATIC 
     ../date.h 
     ../date.cpp
 )
+target_link_libraries(date_lib PUBLIC cr_math_lib)
 if(CAPNPROTO_SERIALIZATION_SUPPORT)
     target_link_libraries(date_lib PUBLIC capnp_schemas_lib)
 endif()
