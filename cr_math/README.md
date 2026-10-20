@@ -22,7 +22,21 @@ here. Another function: add its directory the same way and the name to
 
 ## Building
 
-The sources are GNU C (`__int128`, `x86intrin.h`): GCC or Clang on Linux,
-`clang-cl` on Windows - MSVC itself can't compile them. They are built with
-`-ffp-contract=off`, as CORE-MATH expects FMA contraction to be used either
-everywhere or nowhere.
+The sources are GNU C (`__int128`, `x86intrin.h`): GCC or Clang on Linux; on
+Windows (MSVC) `CMakeLists.txt` compiles them with `clang-cl` into
+MSVC-compatible objects, so the code using them stays with MSVC. They are
+built with `-ffp-contract=off`, as CORE-MATH expects FMA contraction to be
+used either everywhere or nowhere.
+
+`CR_MATH_FMA` (default `ON`) builds them with `-mfma`: the explicit fma calls
+then become single instructions instead of calls to a software fma (MONICA
+as a whole: about 30% faster). Results are identical either way (fma is exact), but the executables
+need an x86-64 CPU with FMA (Intel since 2013, AMD since 2012). Without
+SSE4.1, clang lowers `__builtin_roundeven` to a `roundeven()` call, which
+Microsoft's C runtime lacks - so `CR_MATH_FMA=OFF` on Windows may need
+`-msse4.1` added (untested).
+
+On Windows `long` is 32 bits. The one place in these sources where that
+matters (`asin.c`, the hard-case test) can only flag extra arguments for the
+lookup in its table of exceptions, which returns the result unchanged for any
+argument not in it - so it costs time, never accuracy.
