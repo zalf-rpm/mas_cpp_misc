@@ -684,7 +684,9 @@ std::pair<typename Collection::value_type, typename Collection::value_type> Tool
   if (vs.empty()) return std::make_pair(T(0), T(0));
 
   T minv = std::numeric_limits<T>::max(); //*(ys.begin());
-  T maxv = std::numeric_limits<T>::min(); // *(ys.begin());
+  // lowest(), not min(): for floating point min() is the smallest *positive*
+  // value (2.2e-308), so a maximum over values <= 0 came out as 2.2e-308.
+  T maxv = std::numeric_limits<T>::lowest(); // *(ys.begin());
   for (auto v : vs) minv = std::min(minv, v), maxv = std::max(maxv, v);
   return std::make_pair(minv, maxv);
 }
