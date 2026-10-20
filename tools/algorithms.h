@@ -389,10 +389,13 @@ template <typename T, std::enable_if_t<std::is_floating_point_v<T>, int> = 0>
 std::optional<T> round_to_digits(T value, int digits) {
   if (!std::isfinite(value)) return std::nullopt;
 
-  using Wide = long double;
+  // Not long double: that is 80 bits with GCC on x86-64 but 64 with MSVC, and
+  // e.g. 0.015 * 100 is 1.5 in double but 1.4999... in 80 bits - so Linux and
+  // Windows rounded such values to different digits.
+  using Wide = double;
   const Wide v = static_cast<Wide>(value);
 
-  const Wide factor = std::pow(Wide(10), static_cast<Wide>(std::abs(digits)));
+  const Wide factor = cr::pow(10.0, std::abs(digits));
   if (!std::isfinite(factor) || factor == 0) return std::nullopt;
 
   Wide rounded = 0;
