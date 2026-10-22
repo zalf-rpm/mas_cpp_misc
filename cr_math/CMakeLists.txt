@@ -31,7 +31,10 @@ if(MSVC)
 		set(obj ${CMAKE_CURRENT_BINARY_DIR}/core-math/${f}.obj)
 		file(GLOB headers ${CMAKE_CURRENT_SOURCE_DIR}/core-math/src/binary64/${f}/*.h)
 		list(TRANSFORM CR_MATH_FLAGS PREPEND /clang: OUTPUT_VARIABLE flags)
+		# Ninja creates the output's directory itself, the Makefile generators
+		# (e.g. CLion's NMake) don't
 		add_custom_command(OUTPUT ${obj}
+			COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/core-math
 			COMMAND ${CLANG_CL} /nologo /c /O2 /Zl /std:c11 ${flags} /Fo${obj} ${src}
 			DEPENDS ${src} ${headers}
 			COMMENT "clang-cl ${f}.c"
