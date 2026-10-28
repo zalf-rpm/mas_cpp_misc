@@ -220,11 +220,15 @@ Climate::readClimateDataFromCSVFilesViaHeaders(const std::vector<std::string>& p
                                                const CSVViaHeaderOptions& options) {
   Errors es;
   Climate::DataAccessor finalDA;
+  // the first file has to be complete, the others may just replace or add
+  // some climate elements (see DataAccessor::mergeClimateData)
+  auto supplementaryOptions = options;
+  supplementaryOptions.supplementary = true;
 
   for (const auto& pathToFile : pathsToFiles) {
     if (pathToFile.find("capnp") == 0) continue; // skip capnproto sturdy refs
 
-    auto eda = readClimateDataFromCSVFileViaHeaders(pathToFile, options, false);
+    auto eda = readClimateDataFromCSVFileViaHeaders(pathToFile, finalDA.isValid() ? supplementaryOptions : options, false);
 
     if (!finalDA.isValid()) {
       finalDA = kj::mv(eda.result);
@@ -356,9 +360,10 @@ Climate::readClimateDataFromCSVInputStream(std::istream& is,
       continue;
     }
 
-    if (!usedVs[tmin] ||
-        !usedVs[tmax] ||
-        !usedVs[precip]) {
+    if (!options.supplementary &&
+        (!usedVs[tmin] ||
+         !usedVs[tmax] ||
+         !usedVs[precip])) {
       stringstream oss;
       oss << "Climate data error: One of [tmin, tmax, precip] is missing. Ignoring line: " << endl << s;
       debug() << oss.str();
@@ -367,7 +372,7 @@ Climate::readClimateDataFromCSVInputStream(std::istream& is,
     }
 
     //if we miss the average air temperature, but have the daily minimum and maximum, then calculate the average from these
-    if (!usedVs[tavg]) {
+    if (!usedVs[tavg] && usedVs[tmin] && usedVs[tmax]) {
       vs[tavg] = (vs[tmin] + vs[tmax]) / 2.0;
       usedVs[tavg] = true;
     }
@@ -375,7 +380,7 @@ Climate::readClimateDataFromCSVInputStream(std::istream& is,
     if (!usedVs[globrad] && usedVs[sunhours]) {
       vs[globrad] = Tools::sunshine2globalRadiation(date.julianDay(), vs[sunhours], options.latitude, true);
       usedVs[globrad] = true;
-    } else if (!usedVs[globrad]) {
+    } else if (!usedVs[globrad] && !options.supplementary) {
       stringstream oss;
       oss << "Climate data error: Globrad and sunhours is missing. Ignoring line: " << endl << s;
       debug() << oss.str();
@@ -385,7 +390,7 @@ Climate::readClimateDataFromCSVInputStream(std::istream& is,
 
     map<ACD, double> vsm;
     for (size_t i = 0, size = usedVs.size(); i < size; i++) if (usedVs[i]) vsm[ACD(i)] = vs[i];
-    assert(vsm.size() >= 5);
+    assert(options.supplementary || vsm.size() >= 5);
     data[date] = vsm;
   }
 

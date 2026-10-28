@@ -57,6 +57,10 @@ struct CSVViaHeaderOptions : public Tools::Json11Serializable {
   std::map<std::string, std::pair<std::string, double>> convert;
   std::map<Climate::ACD, std::function<double(double)>> convertFn;
   std::string datePattern;
+  // not part of the JSON: the file only supplements data it is merged into
+  // (all but the first file in readClimateDataFromCSVFilesViaHeaders), so it
+  // doesn't need the otherwise required tmin, tmax, precip and globrad/sunhours
+  bool supplementary{false};
 };
 
 Tools::EResult<Climate::DataAccessor>

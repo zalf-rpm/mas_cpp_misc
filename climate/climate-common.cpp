@@ -492,85 +492,105 @@ void DataAccessor::mergeClimateData(DataAccessor other,
   if (!other.isValid())
     return;
 
-  if (_data->empty()) {
+  if (!isValid()) {
     (*this) = kj::mv(other);
     return;
   }
 
-  if ((startDate() > other.endDate() + 1) || (endDate() < other.startDate() - 1)) {
+  auto range = [](const DataAccessor& da) {
+    return "(" + da.startDate().toIsoDateString() + " - " + da.endDate().toIsoDateString() + ")";
+  };
+  // the names used in CSV headers (tmin, precip, co2, ...)
+  auto acdName = [](size_t i) {
+    static const auto names = [] {
+      std::map<ACD, std::string> m;
+      for (const auto& p : name2acd()) m.emplace(p.second, p.first);
+      return m;
+    }();
+    auto it = names.find(ACD(i));
+    return it == names.end() ? availableClimateData2Name(ACD(i)) : it->second;
+  };
+
+  if ((startDate() > other.endDate() + 1) || (other.startDate() > endDate() + 1)) {
     cout
         << "Can't prepend or append climate data because together data don't give a continuous timeseries. "
-        << "current: (" << startDate().toIsoDateString() << " - " << endDate().toIsoDateString() << ") "
-        << "new: (" << other.startDate().toIsoDateString() << " - " << other.endDate().toIsoDateString() << ")."
+        << "current: " << range(*this) << " new: " << range(other) << ". "
         << "New climate data won't be appended or prepended." << endl;
-  }
-    //insert all other data before this' data
-  else if (startDate() == other.endDate() + 1) {
-    for (uint64_t i = 0; i < _acd2dataIndex.size(); i++) {
-      auto acd = ACD(i);
-      short index = _acd2dataIndex[i];
-      if (index < 0)
-        continue;
-      auto &di = (*_data)[index];
-      const auto &odai = other._data->at(index);
-
-      di.insert(di.begin(), odai.begin(), odai.end());
-    }
-    _startDate = other.startDate();
-    _numberOfSteps = _data->empty() ? 0 : _data->front().size();
-  }
-    //insert all other data after this' data
-  else if (endDate() + 1 == other.startDate()) {
-    for (uint64_t i = 0; i < _acd2dataIndex.size(); i++) {
-      auto acd = ACD(i);
-      short index = _acd2dataIndex[i];
-      if (index < 0)
-        continue;
-      auto &di = (*_data)[index];
-      const auto &odai = other._data->at(index);
-
-      di.insert(di.end(), odai.begin(), odai.end());
-    }
-    _endDate = other.endDate();
-    _numberOfSteps = _data->empty() ? 0 : _data->front().size();
-  }
-    //all of this' data will be overwritten
-  else if (startDate() >= other.startDate() && endDate() <= other.endDate()) {
-    (*this) = other;
     return;
-  } else {
-    int prependCount = startDate() - other.startDate();
-    int appendCount = other.endDate() - endDate();
-
-    for (uint64_t i = 0; i < _acd2dataIndex.size(); i++) {
-      auto acd = ACD(i);
-      short index = _acd2dataIndex[i];
-      if (index < 0)
-        continue;
-      auto &di = (*_data)[index];
-      const auto &odai = other._data->at(index);
-
-      // insert the new elements before
-      if (prependCount > 0)
-        di.insert(di.begin(), odai.begin(), odai.begin() + prependCount);
-
-      if (replaceOverlappingData) {
-        auto dii = di.begin() + abs(prependCount);
-        auto odaii = odai.begin() + (prependCount < 0 ? 0 : prependCount);
-        for (; dii != di.end() && odaii != odai.end(); dii++, odaii++)
-          *dii = *odaii;
-      }
-
-      // insert the new elements after the old ones
-      if (appendCount > 0)
-        di.insert(di.end(), odai.begin() + odai.size() - appendCount, odai.end());
-    }
-    if (prependCount > 0)
-      _startDate = other.startDate();
-    if (appendCount > 0)
-      _endDate = other.endDate();
-    _numberOfSteps = _data->empty() ? 0 : _data->front().size();
   }
+
+  // Every climate element of the result has to cover its whole time range. So
+  // the range can only grow beyond this' range if other has all of this'
+  // climate elements (to fill the added days); else only the part of other
+  // overlapping this' range is used.
+  std::string missingInOther;
+  for (size_t i = 0; i < _acd2dataIndex.size(); i++) {
+    if (_acd2dataIndex[i] >= 0 && other._acd2dataIndex[i] < 0)
+      missingInOther += (missingInOther.empty() ? "" : ", ") + acdName(i);
+  }
+  auto newStart = startDate();
+  auto newEnd = endDate();
+  bool otherExtendsRange = other.startDate() < startDate() || other.endDate() > endDate();
+  if (otherExtendsRange) {
+    if (missingInOther.empty()) {
+      if (other.startDate() < newStart) newStart = other.startDate();
+      if (other.endDate() > newEnd) newEnd = other.endDate();
+    } else {
+      cout
+          << "Can't extend climate data " << range(*this) << " with " << range(other)
+          << ", because the new data lack " << missingInOther << ". "
+          << "Only the new data within " << range(*this) << " will be used." << endl;
+    }
+  }
+
+  const size_t n = size_t(newEnd - newStart) + 1;
+  // the days [from, to] of the result other has data for
+  auto oFrom = other.startDate() > newStart ? other.startDate() : newStart;
+  auto oTo = other.endDate() < newEnd ? other.endDate() : newEnd;
+  const size_t oFromPos = size_t(oFrom - newStart), oToPos = size_t(oTo - newStart);
+  const size_t thisFromPos = size_t(startDate() - newStart), thisToPos = size_t(endDate() - newStart);
+  bool otherCoversResult = other.startDate() <= newStart && other.endDate() >= newEnd;
+
+  // build the merged data anew instead of changing *_data in place: copies of
+  // this DataAccessor (e.g. from cloneForRange) share it
+  auto data = std::make_shared<VVD>();
+  std::vector<short> acd2dataIndex(_acd2dataIndex.size(), -1);
+  for (size_t i = 0; i < _acd2dataIndex.size(); i++) {
+    short ti = _acd2dataIndex[i];
+    short oi = other._acd2dataIndex[i];
+    if (ti < 0 && oi < 0) continue;
+
+    if (ti < 0 && !otherCoversResult) {
+      cout
+          << "Can't add climate element " << acdName(i) << " from " << range(other)
+          << ", because it doesn't cover the whole time range (" << newStart.toIsoDateString() << " - "
+          << newEnd.toIsoDateString() << ")." << endl;
+      continue;
+    }
+
+    std::vector<double> v(n);
+    if (ti >= 0) {
+      const auto& td = (*_data)[ti];
+      std::copy_n(td.begin() + long(_fromStep), thisToPos - thisFromPos + 1, v.begin() + long(thisFromPos));
+    }
+    if (oi >= 0) {
+      const auto& od = (*other._data)[oi];
+      auto oData = od.begin() + long(other._fromStep + size_t(oFrom - other.startDate()));
+      for (size_t pos = oFromPos; pos <= oToPos; pos++, oData++) {
+        bool inThisRange = ti >= 0 && pos >= thisFromPos && pos <= thisToPos;
+        if (!inThisRange || replaceOverlappingData) v[pos] = *oData;
+      }
+    }
+    data->push_back(kj::mv(v));
+    acd2dataIndex[i] = short(data->size() - 1);
+  }
+
+  _data = kj::mv(data);
+  _acd2dataIndex = kj::mv(acd2dataIndex);
+  _fromStep = 0;
+  _numberOfSteps = n;
+  _startDate = newStart;
+  _endDate = newEnd;
 }
 
 void DataAccessor::addOrReplaceClimateData(AvailableClimateData acd,
