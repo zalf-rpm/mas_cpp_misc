@@ -251,7 +251,7 @@ double Tools::cloudAmount2globalRadiation(int doy,
   return asMJpm2pd ? rg_nn / 100.0 : rg_nn;
 }
 
-double Tools::hourlyT(double tmin, double tmax, int h, int sunrise_h) {
+double Tools::hourlyT(double tmin, double tmax, double h, double sunrise_h) {
   double tavg = (tmin + tmax) / 2;
   double amp_ = (tmax - tmin) / 2;
   double H_1;
@@ -281,20 +281,20 @@ double Tools::hourlyVaporPressureDeficit(double hourlyTemperature, double dailyT
 
 double Tools::solarDeclination(int dayOfTheYear) {
   // unknown source; seems like sin(x)=-cos(x+0.5π) with 0.5π=2π/365*365/4=2π/365*91.25 applied on 0.4093 * sin(2π/365*​(doy−81)) (eqivalent degrees version: 23.45 * sin(360/365*​(doy+284)))
-  return (-0.4093 * cos(2.0 * M_PI * (double(dayOfTheYear) + 10.0) / 365.0));
+  return (-0.4093 * cos(2.0 * M_PI * (dayOfTheYear + 10.0) / 365.0));
 }
 
-double Tools::solarElevation(int hour, double latitude, int dayOfTheYear) {
+double Tools::solarElevation(double hour, double latitude, int dayOfTheYear) {
   double lat_rad = latitude * M_PI / 180.0;
 
   double dDecl = solarDeclination(dayOfTheYear);
   double dA = sin(dDecl) * sin(lat_rad);
   double dB = cos(dDecl) * cos(lat_rad);
-  double dHa = M_PI * (double(hour) - 12) / 12;
+  double dHa = M_PI * (hour - 12) / 12;
   return (asin(bound(-1., dA + dB * cos(dHa), 1.))); // can be -ve
 }
 
-double Tools::hourlyRad(double globrad, double lat, int doy, int h) {
+double Tools::hourlyRad(double globrad, double lat, int doy, double h, double OverclockingTimeStep) {
   double dDecl = solarDeclination(doy);
   double lat_rad = lat * M_PI / 180.0;
 
@@ -305,7 +305,7 @@ double Tools::hourlyRad(double globrad, double lat, int doy, int h) {
   double dCoefA = -dB * dPhi;
   double dCoefB = dA * dPhi;
 
-  double dTotrad = std::max((dCoefA * cos(M_PI * h / 12.0) + dCoefB) * 3600, 0.0);
+  double dTotrad = std::max((dCoefA * cos(M_PI * h / 12.0) + dCoefB) * 3600 * OverclockingTimeStep, 0.0);
 
   return dTotrad;
 }
@@ -317,7 +317,7 @@ double Tools::solarDeclinationFAO(double doy, double days_in_year) {
 Tools::solar_position_result Tools::solar_position(double lat, double lon, int doy, double t, double UTC, bool atm_refract_cor) {
   double lat_rad = lat * M_PI/180.0;
 
-  // leap year correction (would additionaly require the input variable y (=year); not strictly neede here and can be neglected for now)
+  // leap year correction (would additionaly require the input variable y (=year); not strictly needed here and can be neglected for now)
   // bool is_leapyear = ((y % 4 == 0) && (y % 100 != 0)) || (y % 400 == 0);
   // double days_in_year = is_leapyear ? 366.0 : 365.0;
 
