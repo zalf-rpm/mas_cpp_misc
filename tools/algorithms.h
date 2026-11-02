@@ -119,13 +119,13 @@ double hourlyVaporPressureDeficit(double hourlyTemperature, double dailyTmin, do
  */
 double solarDeclination(int dayOfTheYear);
 
-double solarElevation(int hour, double latitude, int dayOfTheYear);
+double solarElevation(double hour, double latitude, int dayOfTheYear);
 
 //returns hourly temperature value from daily variables
-double hourlyT(double tmin, double tmax, int h, int sunrise_h);
+double hourlyT(double tmin, double tmax, double h, double sunrise_h);
 
-//returns hourly global radiation
-double hourlyRad(double globrad, double lat, int doy, int h);
+//returns hourly global radiation (or optionally global radiation for double OverclockingTimeStep hours)
+double hourlyRad(double globrad, double lat, int doy, double h, double OverclockingTimeStep=1.0);
 
 /**
  * @brief solar declination calculation, FAO Irrigation and drainage paper 56 style (see https://www.fao.org/4/x0490e/x0490e07.htm#solar%20radiation)
