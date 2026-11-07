@@ -97,7 +97,20 @@ std::string trim(const std::string& s,
 template <typename T>
 T bound(T lower, T value, T upper);
 
-//! returns by default MJ/m²/d (or if set to false J/cm²)
+/**
+ * @brief returns by default MJ/m²/d (or if set to false J/cm²)
+ * 
+ * @param julianDay 
+ * @param sunHours 
+ * @param latitude 
+ * @param asMJpm2pd 
+ * @return double 
+ * 
+ * @see CropModule::fc_Radiation
+ * @see Tools::hourlyRad
+ * @see Tools::solarDeclination
+ * @see Tools::solarElevation
+ */
 double sunshine2globalRadiation(int julianDay, double sunHours,
                                 double latitude, bool asMJpm2pd = true);
 
@@ -110,29 +123,101 @@ double cloudAmount2globalRadiation(int dayOfYear,
 double hourlyVaporPressureDeficit(double hourlyTemperature, double dailyTmin, double dailyTavg, double dailyTmax);
 
 /**
- * @brief solar declination calculation
+ * @brief solar declination calculation from Spitters et al. (1986) eq.16
  * 
- * unknown source
+ * @cite Spitters CJT, Toussaint HAJM & Goudriaan J (1986). Separating the diffuse and direct component of global radiation and its implications for modeling canopy photosynthesis. Part I. Components of incoming radiation. Agricultural and Forest Meteorology, 38(1-3), 217-229. https://doi.org/10.1016/0168-1923(86)90060-2
  * 
  * @param dayOfTheYear 1...365
  * @return double dDecl
+ * 
+ * @see Tools::solarDeclination
+ * @see CropModule::fc_Radiation
  */
 double solarDeclination(int dayOfTheYear);
 
+/**
+ * @brief solar elevation angle calculation from Spitters et al. (1986) eq.15
+ * 
+ * @cite Spitters CJT, Toussaint HAJM & Goudriaan J (1986). Separating the diffuse and direct component of global radiation and its implications for modeling canopy photosynthesis. Part I. Components of incoming radiation. Agricultural and Forest Meteorology, 38(1-3), 217-229. https://doi.org/10.1016/0168-1923(86)90060-2
+ * 
+ * @param hour 
+ * @param latitude 
+ * @param dayOfTheYear 
+ * @return double solar elevation
+ * 
+ * @see Tools::solarDeclination
+ * @see CropModule::fc_Radiation
+ */
 double solarElevation(double hour, double latitude, int dayOfTheYear);
 
-//returns hourly temperature value from daily variables
+/**
+ * @brief return hourly temperature from daily variables
+ * 
+ * FS: This seems to be the WAVE algorithm implementation from Hoogenboom & Huck (1986) Appendix B, based on based on de Wit (1978) chapter 3.1.3
+ * 
+ * @cite de Wit, C. T. (Ed.) (1978). Simulation of assimilation, respiration and transpiration of crops. Simulation monographs. Pudoc. Available at: https://edepot.wur.nl/167486 (accessed 2026/11/05)
+ * @cite Hoogenboom, G., & Huck, M. G. (1986). ROOTSIMU V4. 0: a dynamic simulation of root growth, water uptake, and biomass partitioning in a soil-plant-atmosphere continuum: update and documention. Available at: https://aurora.auburn.edu/bitstream/handle/11200/1517/0668AGRO.pdf?sequence=1&isAllowed=y (accessed 2026/11/05)
+ * 
+ * @param tmin daily minimum temperature
+ * @param tmax daily maximum temperature
+ * @param h time
+ * @param sunrise_h sunrise time
+ * @return double sub-daily temperature at time h
+ */
 double hourlyT(double tmin, double tmax, double h, double sunrise_h);
 
-//returns hourly global radiation (or optionally global radiation for double OverclockingTimeStep hours)
+/**
+ * @brief return hourly global radiation (or optionally global radiation for other timesteps)
+ * 
+ * this performs a solar geometry based weighting of daily global radiation, distributing it to individual hours assuming symmetry around noon
+ * 
+ * FS: This seems consistent with MONICA CropModule::fc_Radiation(...), which is based on the Hermes model (Kersebaum & Richter 1991)
+ *     and also mostly equivalent to Spitters et al. (1986) eq.15-18 (ignoring the minus in eq.17 arcsin(tan(lat_deg)-tan(dDecl)), which seems to be a typo in that paper and should be a multiplication instead).
+ * 
+ * @cite Kersebaum, K.C. and Richter J. (1991): Modelling nitrogen dynamics in a plant-soil system with a simple model for advisory purposes. Fert. Res. 27 (2-3), 273 - 281.
+ * @cite Spitters CJT, Toussaint HAJM & Goudriaan J (1986). Separating the diffuse and direct component of global radiation and its implications for modeling canopy photosynthesis. Part I. Components of incoming radiation. Agricultural and Forest Meteorology, 38(1-3), 217-229. https://doi.org/10.1016/0168-1923(86)90060-2
+ * 
+ * @param globrad daily global radiation
+ * @param lat latitude
+ * @param doy day of year
+ * @param h time
+ * @param OverclockingTimeStep 
+ * @return double sub-daily global radiation at time h
+ * 
+ * @see Tools::solarDeclination
+ * @see Tools::solarElevation
+ * @see CropModule::fc_Radiation
+ * @see Tools::hourlyRad_from_sun_el
+ */
 double hourlyRad(double globrad, double lat, int doy, double h, double OverclockingTimeStep=1.0);
 
 /**
- * @brief solar declination calculation, FAO Irrigation and drainage paper 56 style (see https://www.fao.org/4/x0490e/x0490e07.htm#solar%20radiation)
+ * @brief return hourly global radiation (or optionally global radiation for other timesteps) based on solar elevation
+ * 
+ * this performs a solar geometry based weighting of daily global radiation, distributing it to individual hours assuming symmetry around noon
+ * 
+ * @param globrad daily global radiation
+ * @param lat latitude
+ * @param doy day of year
+ * @param sun_el_rad solar elevation angle [rad]
+ * @param OverclockingTimeStep 
+ * @return double sub-daily global radiation at time h
+ * 
+ * @see Tools::solarDeclination
+ * @see Tools::hourlyRad
+ */
+double hourlyRad_from_sun_el(double globrad, double lat, int doy, double sun_el_rad, double OverclockingTimeStep=1.0);
+
+/**
+ * @brief solar declination calculation, FAO Irrigation and drainage paper 56 style CHapter 3 (see https://www.fao.org/4/x0490e/x0490e07.htm#solar%20radiation)
+ * 
+ * @cite Allen, R. G., Pereira, L. S., Raes, D., & Smith, M. (1998). Crop evapotranspiration-Guidelines for computing crop water requirements-FAO Irrigation and drainage paper 56. Fao, rome, 300(9), D05109.
  * 
  * @param doy day of year [number of the day in the year between 1 (1 January) and 365 or 366 (31 December)]
  * @param days_in_year 365.0 or 366.0
  * @return double dDecl
+ * 
+ * @see Tools::solar_position
  */
 double solarDeclinationFAO(double doy, double days_in_year=365.0);
 
@@ -144,10 +229,11 @@ struct solar_position_result {
  * @brief solar position algorithm
  *
  * This algorithm is designed to work with real world time (as opposed to the local solar time) and therefore requires longitude and UTC timezone information as additional inputs.
- * Mostly based on the approach used in Schmidt et al. 2019: Modeling Yields Response to Shading in the Field-to-Forest Transition Zones in Heterogeneous Landscapes http://dx.doi.org/10.3390/agriculture9010006
- * which is based based on NOAA (National Oceanic and Atmospheric Administration) Solar Calculator (ESRL Global Monitoring Division—Global Radiation Group https://www.esrl.noaa.gov/gmd/grad/solcalc/index.html).
- * -> so this solar position algorithm has already been used in the MONICA context (even though not implemented directly in the MONICA code)
+ * It is based on the approach used in Schmidt et al. 2019 (which is based on NOAA Solar Calculator) and has already been used in the MONICA context (even though not implemented directly in the code).
  *
+ * @cite Schmidt, M., Nendel, C., Funk, R., Mitchell, M. G., & Lischeid, G. (2019). Modeling yields response to shading in the field-to-forest transition zones in heterogeneous landscapes. Agriculture, 9(1), 6. http://dx.doi.org/10.3390/agriculture9010006
+ * @cite NOAA (National Oceanic and Atmospheric Administration) Solar Calculator. ESRL Global Monitoring Division—Global Radiation Group. https://www.esrl.noaa.gov/gmd/grad/solcalc/index.html
+ * 
  * @param lat geographic latitude [decimal degrees]
  * @param lon geographic longitude [decimal degrees]
  * @param doy day of year [number of the day in the year between 1 (1 January) and 365 or 366 (31 December)]
@@ -156,6 +242,7 @@ struct solar_position_result {
  *            If needed, make sure to take into account daylight savings time into the UTC time offset entered here as well.
  *            In case the UTC offset is unknown, the theoretical time of the cenrtral meridian can be estimated like this: static_cast<int>(std::floor(lon / 15.0 + 0.5)). However, that may be off by quite a bit for real world local time.
  * @return solar_position_result
+ * 
  * @author FS
  */
 solar_position_result solar_position(double lat, double lon, int doy, double t, double UTC, bool atm_refract_cor=false);

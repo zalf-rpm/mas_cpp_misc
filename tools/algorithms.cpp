@@ -305,9 +305,18 @@ double Tools::hourlyRad(double globrad, double lat, int doy, double h, double Ov
   double dPhi = (M_PI * globrad / 86400.0) / (dA * cr::acos(bound(-1., -dAoB, 1.)) + dB * sqrt(1 - dAoB * dAoB));
   double dCoefA = -dB * dPhi;
   double dCoefB = dA * dPhi;
-
   double dTotrad = std::max((dCoefA * cr::cos(M_PI * h / 12.0) + dCoefB) * 3600 * OverclockingTimeStep, 0.0);
+  return dTotrad;
+}
 
+double Tools::hourlyRad_from_sun_el(double globrad, double lat, int doy, double sun_el_rad, double OverclockingTimeStep) {
+  double dDecl = solarDeclination(doy); // Spitters et al. 1986 eq.15
+  double lat_rad = lat * M_PI / 180.0;
+  double dA = cr::sin(dDecl) * cr::sin(lat_rad);
+  double dB = cr::cos(dDecl) * cr::cos(lat_rad);
+  double dAoB = dA / dB;
+  double dPhi = (M_PI * globrad / 86400.0) / (dA * cr::acos(bound(-1., -dAoB, 1.)) + dB * sqrt(1 - dAoB * dAoB));
+  double dTotrad = std::max(dPhi * cr::sin(sun_el_rad) * 3600 * OverclockingTimeStep, 0.0);
   return dTotrad;
 }
 
