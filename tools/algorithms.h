@@ -209,7 +209,7 @@ double hourlyRad(double globrad, double lat, int doy, double h, double Overclock
 double hourlyRad_from_sun_el(double globrad, double lat, int doy, double sun_el_rad, double OverclockingTimeStep=1.0);
 
 /**
- * @brief solar declination calculation, FAO Irrigation and drainage paper 56 style CHapter 3 (see https://www.fao.org/4/x0490e/x0490e07.htm#solar%20radiation)
+ * @brief solar declination calculation, FAO Irrigation and drainage paper 56 style Chapter 3 (see https://www.fao.org/4/x0490e/x0490e07.htm#solar%20radiation)
  * 
  * @cite Allen, R. G., Pereira, L. S., Raes, D., & Smith, M. (1998). Crop evapotranspiration-Guidelines for computing crop water requirements-FAO Irrigation and drainage paper 56. Fao, rome, 300(9), D05109.
  * 
@@ -222,8 +222,9 @@ double hourlyRad_from_sun_el(double globrad, double lat, int doy, double sun_el_
 double solarDeclinationFAO(double doy, double days_in_year=365.0);
 
 struct solar_position_result {
-  double el_rad;  // solar elevation angle [radians]
-  double az_rad;  // solar azimuth angle [radians]
+  double el_rad;   // solar elevation angle [radians]
+  double az_rad;   // solar azimuth angle [radians]
+  double extrarad; // extraterrestrial radiation [MJ m-2 h-1]
 };
 /**
  * @brief solar position algorithm
@@ -233,6 +234,10 @@ struct solar_position_result {
  *
  * @cite Schmidt, M., Nendel, C., Funk, R., Mitchell, M. G., & Lischeid, G. (2019). Modeling yields response to shading in the field-to-forest transition zones in heterogeneous landscapes. Agriculture, 9(1), 6. http://dx.doi.org/10.3390/agriculture9010006
  * @cite NOAA (National Oceanic and Atmospheric Administration) Solar Calculator. ESRL Global Monitoring Division—Global Radiation Group. https://www.esrl.noaa.gov/gmd/grad/solcalc/index.html
+ * @cite Spencer, J. W. (1971). Fourier series representation of the position of the sun. Search, 2(5), 172.
+ * @cite Oglesby, M. (1998). Fourier paper. https://www.mail-archive.com/sundial@uni-koeln.de/msg01050.html
+ * @cite Pickard, J. (1998). Fourier Paper. Note added 3 February 1998. https://www.mail-archive.com/sundial@uni-koeln.de/msg01050.html
+ * @cite Allen, R. G., Pereira, L. S., Raes, D., & Smith, M. (1998). Crop evapotranspiration-Guidelines for computing crop water requirements-FAO Irrigation and drainage paper 56. Fao, rome, 300(9), D05109. https://www.fao.org/4/x0490e/x0490e07.htm
  * 
  * @param lat geographic latitude [decimal degrees]
  * @param lon geographic longitude [decimal degrees]

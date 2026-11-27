@@ -321,7 +321,7 @@ double Tools::hourlyRad_from_sun_el(double globrad, double lat, int doy, double 
 }
 
 double Tools::solarDeclinationFAO(double doy, double days_in_year) {
-  return 0.409 * cr::sin(2.0 * M_PI * doy/days_in_year - 1.39);
+  return 0.409 * cr::sin(2.0 * M_PI * doy/days_in_year - 1.39); // FAO-56 eq.21
 }
 
 Tools::solar_position_result Tools::solar_position(double lat, double lon, int doy, double t, double UTC, bool atm_refract_cor) {
@@ -338,7 +338,9 @@ Tools::solar_position_result Tools::solar_position(double lat, double lon, int d
   double n = fract * (doy - 1. + (t - 12.) / 24.); // double n = 2.0 * M_PI * (doy - 1. + (t-12.)/24.) / days_in_year;
   // double dDecl = 0.409 * sin(fract * doy - 1.39); // = solarDeclinationFAO(doy, days_in_year);
   //* NOAA solar calculator based approximation for solar declination (already used in Schmidt et al. 2019 http://dx.doi.org/10.3390/agriculture9010006 in the MONICA context)
-  // should be slightly more accurate than solarDeclinationFAO(doy, days_in_year) or solarDeclination(doy)
+  // this Fourier formulation should be slightly more accurate than solarDeclinationFAO(doy, days_in_year) or solarDeclination(doy)
+  // the original publication of these coefficients is often attributed to Spencer, J. W. (1971). Fourier series representation of the position of the sun. Search, 2(5), 172.
+  // cit. 
   // double dDecl = 0.006918 - 0.399912 * cos(n) +
   //                0.070257 * sin(n) - 0.006758 * cos(2.0 * n) +
   //                0.000907 * sin(2.0 * n) - 0.002697 * cos(3.0 * n) +
@@ -367,9 +369,13 @@ Tools::solar_position_result Tools::solar_position(double lat, double lon, int d
   }
 
   double EoT = 229.18 * (
-    0.000075 + 0.001868 * cr::cos(n) -
-    0.032077 * cr::sin(n) - 0.014615 * cr::cos(2.0 * n) -
-    0.040849 * cr::sin(2.0 * n)
+    0.0000075 +
+    // FS: Schmidt et al. 2018 version uses 0.000075. The error should be small, but this should be 0.0000075 according to a note by Pickard, J. 1998, who claims that Spencer pointed out
+    // the error in the print of the original publication to him (see https://www.mail-archive.com/sundial@uni-koeln.de/msg01050.html). References using this corrected version include the
+    // pvlib python implementation https://pvlib-python.readthedocs.io/en/stable/_modules/pvlib/solarposition.html#equation_of_time_spencer71, https://doi.org/10.5281/zenodo.22975283)
+    0.001868 * cosn -
+    0.032077 * sinn - 0.014615 * cos2n -
+    0.040849 * sin2n
   );  // Equation of Time [minutes]
 
   double tsol = t + (4.0 * lon_offset + EoT) / 60.0;  // t + lon_offset/15 + Eot/60
@@ -381,17 +387,21 @@ Tools::solar_position_result Tools::solar_position(double lat, double lon, int d
   double dHa = M_PI/12.0 * (tsol - 12.0);  // hour angle = 15° * (solarTime - 12h)
 
   // solar elevation
-  double dA = cr::sin(dDecl) * cr::sin(lat_rad);
-  double dB = cr::cos(dDecl) * cr::cos(lat_rad);
-  double el_rad = cr::asin(bound(-1., dA + dB * cr::cos(dHa), 1.));
+  double sindDecl = cr::sin(dDecl);
+  double sinlat_rad = cr::sin(lat_rad);
+  double coslat_rad = cr::cos(lat_rad);
+  double dA = sindDecl * sinlat_rad;
+  double dB = cr::cos(dDecl) * coslat_rad;
+  double sin_el_rad = bound(-1., dA + dB * cr::cos(dHa), 1.);
+  double el_rad = cr::asin(sin_el_rad);
 
   // solar azimuth, conventional (calculate before refraction correction!)
   double az_rad;
-  double denom = cr::cos(lat_rad) * cr::cos(el_rad);
+  double denom = coslat_rad * cr::cos(el_rad);
   if (std::abs(denom) < 1e-12) {  // denominator from azimuth calculation; could become zero-ish at 90° solar elevation (or close to the North pole & South pole)
     az_rad = std::numeric_limits<double>::quiet_NaN();  // safeguard to avoid numerical explosion
   } else {  // normal cases
-    double cosaz = (cr::sin(lat_rad) * cr::sin(el_rad) - cr::sin(dDecl)) / denom;  // (sin(lat_rad) * cos(zenith) - sin(dDecl)) / (cos(lat_rad)*sin(zenith));
+    double cosaz = (sinlat_rad * cr::sin(el_rad) - sindDecl) / denom;  // (sin(lat_rad) * cos(zenith) - sin(dDecl)) / (cos(lat_rad)*sin(zenith));
     az_rad = cr::acos(bound(-1., cosaz, 1.));
     if (dHa > 0) {
       az_rad = fmod(az_rad + M_PI, 2.0 * M_PI);       // (acos(cosaz) * 180./M_PI + 180.) % 360.;
@@ -410,6 +420,13 @@ Tools::solar_position_result Tools::solar_position(double lat, double lon, int d
   // double Sx = cos(dDecl) * sin((lon_s - lon) * M_PI/180.);
   // double Sy = cos(lat_rad) * sin(dDecl) - sin(lat_rad) * cos(dDecl) * cos((lon_s - lon) * M_PI/180.);
   // double az_rad = atan2(Sx, Sy);
+
+  // extraterrestrial radiation calculation
+  static const double s0 = 4.92; // solar constant [MJ m-2 h-1], FAO-56 uses 0.0820 [MJ m-2 min-1] = roughly 1367 [Wm-2]
+  // Spencer 1971 formula for 1/r^2 (taken from Oglesby, M. 1998, https://www.mail-archive.com/sundial@uni-koeln.de/msg01050.html)
+  double inv_r_squared = 1.000110 + 0.034221 * cosn + 0.001280 * sinn + 0.000719 * cos2n + 0.000077 * sin2n; // this seems to be the eccentricity correction factor
+  // alternatively, FAO-56 eq.23 could be applied here (see https://www.fao.org/4/x0490e/x0490e07.htm#solar%20radiation): 1 + 0.033 * cos(2 * M_PI * doy / 365)
+  double extrarad = s0 * inv_r_squared * std::max(0.0, sin_el_rad); // on horizontal surface
 
   // solar elevation incluing atmospheric refraction correction (see based on NOAA solar calculator https://gml.noaa.gov/grad/solcalc/calcdetails.html)
   if (atm_refract_cor) {
@@ -434,7 +451,7 @@ Tools::solar_position_result Tools::solar_position(double lat, double lon, int d
     el_rad = el_deg * M_PI/180.;
   }
 
-  return {el_rad, az_rad};
+  return {el_rad, az_rad, extrarad};
 }
 
 HistogramData Tools::histogramDataByStepSize(const vector<double>& ys,
